@@ -1,0 +1,16 @@
+# configs/kv_quant.yaml
+# Configuração do runner de quantização de KV cache
+
+model: Qwen/Qwen2.5-1.5B-Instruct
+dtype: fp16
+device: auto
+max_new_tokens: 256
+trust_remote_code: false
+
+kv_quantization:
+  enabled: true
+  method: turboquant    # uniform | kivi | turboquant
+  bits: 4               # 2 | 4 | 8
+  group_size: 64        # tokens por grupo (kivi / turboquant)
+  outlier_channels: 32  # canais preservados em FP16 (turboquant)
+  rotation_seed: 42     # semente para rotação ortogonal (turboquant)

@@ -1,0 +1,30 @@
+{"id": "q01", "prompt": "What is the capital of France?", "reference": "Paris"}
+{"id": "q02", "prompt": "Who wrote the play Hamlet?", "reference": "William Shakespeare"}
+{"id": "q03", "prompt": "What is the chemical symbol for water?", "reference": "H2O"}
+{"id": "q04", "prompt": "In what year did World War II end?", "reference": "1945"}
+{"id": "q05", "prompt": "What is the largest planet in the solar system?", "reference": "Jupiter"}
+{"id": "q06", "prompt": "What programming language is known for its use in data science and machine learning?", "reference": "Python"}
+{"id": "q07", "prompt": "What does CPU stand for?", "reference": "Central Processing Unit"}
+{"id": "q08", "prompt": "Who painted the Mona Lisa?", "reference": "Leonardo da Vinci"}
+{"id": "q09", "prompt": "What is the speed of light in a vacuum approximately equal to?", "reference": "299792458 meters per second"}
+{"id": "q10", "prompt": "What is the powerhouse of the cell?", "reference": "mitochondria"}
+{"id": "q11", "prompt": "What does HTTP stand for?", "reference": "HyperText Transfer Protocol"}
+{"id": "q12", "prompt": "What is the boiling point of water at sea level in Celsius?", "reference": "100"}
+{"id": "q13", "prompt": "Which element has the atomic number 1?", "reference": "hydrogen"}
+{"id": "q14", "prompt": "What does RAM stand for in computing?", "reference": "Random Access Memory"}
+{"id": "q15", "prompt": "Who developed the theory of general relativity?", "reference": "Albert Einstein"}
+{"id": "q16", "prompt": "What is the binary representation of the decimal number 10?", "reference": "1010"}
+{"id": "q17", "prompt": "What does GPU stand for?", "reference": "Graphics Processing Unit"}
+{"id": "q18", "prompt": "In machine learning, what does backpropagation compute?", "reference": "gradients"}
+{"id": "q19", "prompt": "What is the main gas responsible for the greenhouse effect?", "reference": "carbon dioxide"}
+{"id": "q20", "prompt": "What does API stand for?", "reference": "Application Programming Interface"}
+{"id": "q21", "prompt": "What sorting algorithm has average time complexity O(n log n)?", "reference": "merge sort"}
+{"id": "q22", "prompt": "What is the result of 2 to the power of 10?", "reference": "1024"}
+{"id": "q23", "prompt": "What language is used to style web pages?", "reference": "CSS"}
+{"id": "q24", "prompt": "What does SQL stand for?", "reference": "Structured Query Language"}
+{"id": "q25", "prompt": "What is the name of the transformer architecture paper that introduced attention mechanisms for NLP?", "reference": "Attention Is All You Need"}
+{"id": "q26", "prompt": "What does LLM stand for in the context of AI?", "reference": "Large Language Model"}
+{"id": "q27", "prompt": "What is quantization in the context of neural networks?", "reference": "reducing the precision of weights and activations"}
+{"id": "q28", "prompt": "What is KV cache in the context of transformer inference?", "reference": "cached key and value tensors from previous tokens to avoid recomputation"}
+{"id": "q29", "prompt": "What does perplexity measure in language models?", "reference": "how well the model predicts a text sample"}
+{"id": "q30", "prompt": "What is the difference between INT8 and FP16 in neural network inference?", "reference": "INT8 uses 8-bit integers while FP16 uses 16-bit floating point numbers"}

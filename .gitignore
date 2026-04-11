@@ -1,0 +1,54 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+
+# ── Virtualenv / uv ───────────────────────────────────────────────────────────
+.venv/
+venv/
+
+# ── Obsidian (vault local — não pertence ao projeto) ─────────────────────────
+.obsidian/
+files/
+
+# ── Modelos baixados localmente ───────────────────────────────────────────────
+models/
+*.safetensors
+*.bin
+*.gguf
+
+# ── Resultados brutos (reproduzíveis via make all) ────────────────────────────
+results/raw/*.json
+# Mantém a pasta no repo via .gitkeep
+!results/raw/.gitkeep
+
+# ── Relatórios gerados (reproduzíveis via make report) ───────────────────────
+results/reports/*.csv
+results/reports/*.png
+!results/reports/.gitkeep
+
+# ── Ambiente ──────────────────────────────────────────────────────────────────
+.env
+# .env.example é trackeado — template sem segredos
+
+# ── Editor / OS ───────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+Thumbs.db
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── Caches ────────────────────────────────────────────────────────────────────
+.ruff_cache/
+.pytest_cache/
+
+# ── uv.lock (versiona as dependências exatas — recomendado manter) ────────────
+# uv.lock   ← descomente para NÃO versionar o lockfile

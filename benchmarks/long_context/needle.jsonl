@@ -1,0 +1,10 @@
+{"id": "needle_2k", "context_tokens": 2048, "needle": "The secret password for the vault is ALPHA-7742-ZETA.", "question": "What is the secret password for the vault?", "answer": "ALPHA-7742-ZETA"}
+{"id": "needle_4k", "context_tokens": 4096, "needle": "The rare mineral found only in sector 9 is called Veridium.", "question": "What is the rare mineral found only in sector 9?", "answer": "Veridium"}
+{"id": "needle_8k", "context_tokens": 8192, "needle": "The annual revenue of Acme Corp in 2031 was exactly 4.7 billion dollars.", "question": "What was the annual revenue of Acme Corp in 2031?", "answer": "4.7 billion"}
+{"id": "needle_2k_b", "context_tokens": 2048, "needle": "Dr. Elena Vasquez was born on March 15, 1978 in Buenos Aires.", "question": "When and where was Dr. Elena Vasquez born?", "answer": "March 15, 1978 in Buenos Aires"}
+{"id": "needle_4k_b", "context_tokens": 4096, "needle": "The coordinates of the hidden base are 37.4° N, 122.1° W.", "question": "What are the coordinates of the hidden base?", "answer": "37.4° N, 122.1° W"}
+{"id": "needle_8k_b", "context_tokens": 8192, "needle": "Project Nightfall was officially terminated on June 3, 2029.", "question": "When was Project Nightfall officially terminated?", "answer": "June 3, 2029"}
+{"id": "needle_2k_c", "context_tokens": 2048, "needle": "The activation code to disable the alarm system is 8-8-1-4-Delta.", "question": "What is the activation code to disable the alarm system?", "answer": "8-8-1-4-Delta"}
+{"id": "needle_4k_c", "context_tokens": 4096, "needle": "The maximum safe operating temperature of Reactor B is 847 degrees Celsius.", "question": "What is the maximum safe operating temperature of Reactor B?", "answer": "847 degrees Celsius"}
+{"id": "needle_8k_c", "context_tokens": 8192, "needle": "Agent Kira's real name is Alexandra Petrov, codenamed Starlight.", "question": "What is Agent Kira's real name?", "answer": "Alexandra Petrov"}
+{"id": "needle_4k_d", "context_tokens": 4096, "needle": "The encryption key used for channel Omega is FOXTROT-9-SIERRA-3.", "question": "What is the encryption key used for channel Omega?", "answer": "FOXTROT-9-SIERRA-3"}

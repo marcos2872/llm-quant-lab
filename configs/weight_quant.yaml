@@ -1,0 +1,14 @@
+# configs/weight_quant.yaml
+# Configuração do runner de quantização de pesos (bitsandbytes)
+
+model: Qwen/Qwen2.5-1.5B-Instruct
+dtype: fp16
+device: auto
+max_new_tokens: 256
+trust_remote_code: false
+
+weight_quantization:
+  enabled: true
+  bits: 4             # 8 | 4
+  double_quant: true  # bnb_4bit_use_double_quant (apenas bits=4)
+  quant_type: nf4     # nf4 | fp4 (apenas bits=4)

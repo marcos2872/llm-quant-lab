@@ -1,0 +1,8 @@
+# configs/baseline.yaml
+# Configuração do runner baseline (FP16 sem quantização)
+
+model: Qwen/Qwen2.5-1.5B-Instruct
+dtype: fp16
+device: auto          # auto detecta cuda > mps > cpu
+max_new_tokens: 256
+trust_remote_code: false

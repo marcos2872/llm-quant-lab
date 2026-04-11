@@ -1,0 +1,255 @@
+"""
+src/main.py
+-----------
+CLI principal do LLM Quant Lab.
+
+Uso:
+    uv run python -m src.main <comando> [opções]
+    # ou, após `uv sync`:
+    lab <comando> [opções]
+
+Comandos disponíveis por fase:
+    Fase 1:  baseline
+    Fase 2:  weight-quant
+    Fase 3:  kv-quant
+    Fase 4:  eval-ppl, eval-needle, eval-tasks
+    Fase 5:  report
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Annotated
+
+import typer
+import yaml
+from dotenv import load_dotenv
+from rich.console import Console
+
+load_dotenv()
+
+app = typer.Typer(
+    name="lab",
+    help="LLM Quant Lab — benchmark local de quantização de LLMs",
+    add_completion=False,
+)
+console = Console()
+
+
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+def _load_config(path: Path) -> dict:
+    return yaml.safe_load(path.read_text()) or {}
+
+
+def _patch_model(config: dict, model: str | None) -> dict:
+    """Sobrescreve model no config se fornecido via CLI."""
+    if model:
+        config["model"] = model
+    return config
+
+
+def _resolve_device(model_obj) -> str:
+    try:
+        return str(next(model_obj.parameters()).device)
+    except StopIteration:
+        return "cpu"
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FASE 1 — Baseline
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.command()
+def baseline(
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("configs/baseline.yaml"),
+    prompts: Annotated[Path, typer.Option("--prompts", "-p")] = Path("benchmarks/prompts/basic.jsonl"),
+    output_dir: Annotated[Path, typer.Option("--output-dir", "-o")] = Path("results/raw"),
+    model: Annotated[str | None, typer.Option("--model", "-m", help="Sobrescreve model do config")] = None,
+) -> None:
+    """Roda inferência baseline (FP16 sem quantização) e salva métricas."""
+    cfg = _load_config(config)
+    cfg = _patch_model(cfg, model)
+    config.write_text(yaml.dump(cfg)) if model else None
+
+    from src.runner.baseline import run_baseline
+    run_baseline(config_path=config, prompts_file=prompts, output_dir=output_dir)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FASE 2 — Weight Quantization
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.command(name="weight-quant")
+def weight_quant(
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("configs/weight_quant.yaml"),
+    prompts: Annotated[Path, typer.Option("--prompts", "-p")] = Path("benchmarks/prompts/basic.jsonl"),
+    output_dir: Annotated[Path, typer.Option("--output-dir", "-o")] = Path("results/raw"),
+    bits: Annotated[str, typer.Option("--bits", help="Bits separados por vírgula. Ex: 4,8")] = "",
+    model: Annotated[str | None, typer.Option("--model", "-m")] = None,
+) -> None:
+    """Roda quantização de pesos (INT8/INT4 via bitsandbytes) e salva métricas."""
+    cfg = _load_config(config)
+    cfg = _patch_model(cfg, model)
+
+    bits_list = [int(b.strip()) for b in bits.split(",")] if bits else None
+
+    from src.runner.weight_quant import run_weight_quant
+    run_weight_quant(
+        config_path=config,
+        prompts_file=prompts,
+        output_dir=output_dir,
+        bits_list=bits_list,
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FASE 3 — KV Cache Quantization
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.command(name="kv-quant")
+def kv_quant(
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("configs/kv_quant.yaml"),
+    prompts: Annotated[Path, typer.Option("--prompts", "-p")] = Path("benchmarks/prompts/basic.jsonl"),
+    output_dir: Annotated[Path, typer.Option("--output-dir", "-o")] = Path("results/raw"),
+    method: Annotated[str | None, typer.Option("--method", help="uniform | kivi | turboquant")] = None,
+    bits: Annotated[int | None, typer.Option("--bits")] = None,
+    model: Annotated[str | None, typer.Option("--model", "-m")] = None,
+) -> None:
+    """Roda quantização de KV cache com hooks PyTorch e salva métricas."""
+    cfg = _load_config(config)
+    cfg = _patch_model(cfg, model)
+
+    if method:
+        cfg.setdefault("kv_quantization", {})["method"] = method
+    if bits:
+        cfg.setdefault("kv_quantization", {})["bits"] = bits
+
+    # salva config modificado temporariamente em memória (não persiste em disco)
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump(cfg, tmp)
+        tmp_path = Path(tmp.name)
+
+    from src.runner.kv_quant import run_kv_quant
+    run_kv_quant(config_path=tmp_path, prompts_file=prompts, output_dir=output_dir)
+    tmp_path.unlink(missing_ok=True)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FASE 4 — Avaliação de qualidade
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.command(name="eval-ppl")
+def eval_ppl(
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("configs/baseline.yaml"),
+    corpus: Annotated[Path, typer.Option("--corpus")] = Path("benchmarks/perplexity/wikitext.jsonl"),
+    result_json: Annotated[Path | None, typer.Option("--result-json", help="JSON de run para anotar PPL")] = None,
+    max_samples: Annotated[int, typer.Option("--max-samples")] = 50,
+    model: Annotated[str | None, typer.Option("--model", "-m")] = None,
+) -> None:
+    """Calcula perplexidade do modelo no corpus WikiText-2."""
+    cfg = _load_config(config)
+    cfg = _patch_model(cfg, model)
+
+    from src.runner.loader import load_model
+    llm, tokenizer = load_model(cfg)
+    device = _resolve_device(llm)
+
+    from src.eval.perplexity import eval_perplexity
+    result = eval_perplexity(llm, tokenizer, corpus_path=corpus, max_samples=max_samples, device=device)
+
+    console.print(result)
+
+    if result_json and result_json.exists():
+        import json
+        payload = json.loads(result_json.read_text())
+        payload["perplexity"] = result["perplexity"]
+        payload["avg_nll"] = result["avg_nll"]
+        result_json.write_text(json.dumps(payload, indent=2))
+        console.print(f"[green]✓[/green] PPL anotado em {result_json}")
+
+
+@app.command(name="eval-needle")
+def eval_needle_cmd(
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("configs/baseline.yaml"),
+    needle_file: Annotated[Path, typer.Option("--needle-file")] = Path("benchmarks/long_context/needle.jsonl"),
+    result_json: Annotated[Path | None, typer.Option("--result-json")] = None,
+    model: Annotated[str | None, typer.Option("--model", "-m")] = None,
+) -> None:
+    """Avalia recall no teste Needle-in-a-Haystack."""
+    cfg = _load_config(config)
+    cfg = _patch_model(cfg, model)
+
+    from src.runner.loader import load_model
+    llm, tokenizer = load_model(cfg)
+    device = _resolve_device(llm)
+
+    from src.eval.needle import eval_needle
+    result = eval_needle(llm, tokenizer, needle_file=needle_file, device=device)
+
+    if result_json and result_json.exists():
+        import json
+        payload = json.loads(result_json.read_text())
+        payload["needle_recall"] = result["overall_recall"]
+        payload["needle_by_context"] = result["by_context_len"]
+        result_json.write_text(json.dumps(payload, indent=2))
+        console.print(f"[green]✓[/green] Needle recall anotado em {result_json}")
+
+
+@app.command(name="eval-tasks")
+def eval_tasks(
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("configs/baseline.yaml"),
+    prompts: Annotated[Path, typer.Option("--prompts", "-p")] = Path("benchmarks/prompts/basic.jsonl"),
+    result_json: Annotated[Path | None, typer.Option("--result-json")] = None,
+    model: Annotated[str | None, typer.Option("--model", "-m")] = None,
+) -> None:
+    """Avalia F1 e exact match em conjunto fixo de prompts QA."""
+    cfg = _load_config(config)
+    cfg = _patch_model(cfg, model)
+
+    from src.runner.loader import load_model
+    llm, tokenizer = load_model(cfg)
+    device = _resolve_device(llm)
+
+    from src.eval.task_score import eval_task_score
+    result = eval_task_score(llm, tokenizer, prompts_file=prompts, device=device)
+
+    if result_json and result_json.exists():
+        import json
+        payload = json.loads(result_json.read_text())
+        payload["task_f1"] = result["avg_f1"]
+        payload["exact_match_rate"] = result["exact_match_rate"]
+        result_json.write_text(json.dumps(payload, indent=2))
+        console.print(f"[green]✓[/green] Task score anotado em {result_json}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FASE 5 — Relatório
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.command()
+def report(
+    raw_dir: Annotated[Path, typer.Option("--raw-dir")] = Path("results/raw"),
+    output_dir: Annotated[Path, typer.Option("--output-dir")] = Path("results/reports"),
+) -> None:
+    """Agrega todos os JSONs de resultados em CSV e gera gráficos comparativos."""
+    from src.reporter.csv_writer import aggregate_results
+    from src.reporter.plots import generate_all_plots
+
+    df = aggregate_results(raw_dir=raw_dir, output_path=output_dir / "summary.csv")
+
+    if df.empty:
+        console.print("[yellow]Nenhum resultado para plotar. Rode baseline/weight-quant/kv-quant primeiro.[/yellow]")
+        raise typer.Exit(0)
+
+    generate_all_plots(df=df, output_dir=output_dir)
+    console.print(f"\n[bold green]✓ Relatório completo em {output_dir}/[/bold green]")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Entry point
+# ══════════════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    app()
