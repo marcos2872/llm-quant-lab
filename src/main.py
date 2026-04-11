@@ -18,6 +18,7 @@ Comandos disponíveis por fase:
 
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 from typing import Annotated
 
@@ -27,6 +28,13 @@ from dotenv import load_dotenv
 from rich.console import Console
 
 load_dotenv()
+
+# suprime FutureWarning e UserWarning do transformers (Cache API, do_sample, etc.)
+# usa message= porque o transformers emite com stacklevel alto, fazendo o warning
+# aparecer originado no nosso código — o filtro module="transformers" não pega
+warnings.filterwarnings("ignore", message=".*past_key_values.*", category=FutureWarning)
+warnings.filterwarnings("ignore", message=".*do_sample.*top_k.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*Cache.*", category=FutureWarning)
 
 app = typer.Typer(
     name="lab",

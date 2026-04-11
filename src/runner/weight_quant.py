@@ -75,6 +75,10 @@ def run_weight_quant(
         model, tokenizer = load_model(config)
         device = _resolve_device(model)
 
+        # detecta se o BnB foi silenciado pelo loader (sem CUDA)
+        import torch
+        bnb_active = torch.cuda.is_available() and config["weight_quantization"].get("enabled", False)
+
         results: list[dict] = []
         for entry in track(prompts, description=f"INT{bits}..."):
             _reset_peak()
@@ -101,8 +105,9 @@ def run_weight_quant(
         payload = {
             "run_type": "weight_quant",
             "model": config["model"],
-            "quant_mode": f"weight_{bits}bit",
-            "bits": bits,
+            "quant_mode": f"weight_{bits}bit" if bnb_active else f"weight_{bits}bit_fallback_fp32",
+            "bits": bits if bnb_active else 32,
+            "bnb_active": bnb_active,
             "config": config,
             "results": results,
         }

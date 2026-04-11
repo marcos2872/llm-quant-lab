@@ -1,5 +1,7 @@
 # LLM Quant Lab
 
+> ⚠️ **Em progresso** — projeto em desenvolvimento ativo. APIs, estrutura de arquivos e resultados podem mudar a qualquer momento.
+
 Benchmark local reproduzível para comparar **quantização de pesos** e **quantização de KV cache** em modelos de linguagem locais, medindo o trade-off entre compressão de memória, throughput e qualidade de geração.
 
 Inspirado no paper **TurboQuant** (Xu et al., 2025 — arXiv:2504.19874).

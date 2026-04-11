@@ -12,6 +12,7 @@ Suporta:
 from __future__ import annotations
 
 import logging
+import warnings
 
 import torch
 from rich.console import Console
@@ -19,6 +20,12 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 console = Console()
 logger = logging.getLogger(__name__)
+
+# suprime FutureWarning e UserWarning do transformers
+# usa message= porque stacklevel alto faz o warning aparecer no código do chamador
+warnings.filterwarnings("ignore", message=".*past_key_values.*", category=FutureWarning)
+warnings.filterwarnings("ignore", message=".*do_sample.*top_k.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*Cache.*", category=FutureWarning)
 
 # mapeamento de string → torch.dtype
 _DTYPE_MAP: dict[str, torch.dtype] = {
@@ -37,6 +44,11 @@ def _resolve_device(device: str) -> str:
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         return "mps"
     return "cpu"
+
+
+def _bnb_available() -> bool:
+    """Verifica se bitsandbytes pode ser usado (requer CUDA)."""
+    return torch.cuda.is_available()
 
 
 def _build_bnb_config(wq: dict) -> BitsAndBytesConfig:
@@ -85,6 +97,14 @@ def load_model(config: dict) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
     wq = config.get("weight_quantization", {})
     use_bnb = wq.get("enabled", False)
 
+    if use_bnb and not _bnb_available():
+        bits = wq.get("bits", 4)
+        console.print(
+            f"[yellow]⚠ bitsandbytes INT{bits} requer CUDA — não disponível neste ambiente.[/yellow]\n"
+            f"[yellow]  Carregando em {dtype_str} sem quantização de pesos.[/yellow]"
+        )
+        use_bnb = False
+
     console.print(f"[bold]Carregando modelo[/bold] {model_name}  |  device={device}  |  dtype={dtype_str}  |  bnb={use_bnb}")
 
     tokenizer = AutoTokenizer.from_pretrained(
@@ -102,8 +122,14 @@ def load_model(config: dict) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
     if use_bnb:
         load_kwargs["quantization_config"] = _build_bnb_config(wq)
         load_kwargs["device_map"] = "auto"
+    elif device != "cpu":
+        load_kwargs["device_map"] = device
     else:
-        load_kwargs["device_map"] = device if device != "cpu" else None
+        # CPU: fp16 não é suportado em todos os ops — usa fp32
+        if torch_dtype == torch.float16:
+            console.print("[dim]CPU detectado: convertendo fp16 → fp32 para compatibilidade[/dim]")
+            torch_dtype = torch.float32
+            load_kwargs["torch_dtype"] = torch_dtype
 
     model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
 
