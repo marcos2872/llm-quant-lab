@@ -127,7 +127,9 @@ def kv_quant(
         cfg.setdefault("kv_quantization", {})["bits"] = bits
 
     from src.runner.kv_quant import run_kv_quant
-    run_kv_quant(prompts_file=prompts, output_dir=output_dir, config_override=cfg)
+    result = run_kv_quant(prompts_file=prompts, output_dir=output_dir, config_override=cfg)
+    if result is None:
+        raise typer.Exit(0)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

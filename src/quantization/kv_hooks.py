@@ -1,10 +1,9 @@
 """
 src/quantization/kv_hooks.py
 -----------------------------
-Instala e remove hooks PyTorch que interceptam os tensores K/V
-nos módulos de atenção do modelo para aplicar quantização em tempo de execução.
+Instala e remove hooks PyTorch que interceptam K/V nos módulos de atenção.
 
-Compatibilidade testada com: Qwen2, Llama-3, Mistral.
+Compatibilidade: Qwen2, Llama-3, Mistral, GPT-2, Falcon, Pythia.
 """
 
 from __future__ import annotations
@@ -18,6 +17,17 @@ import torch
 logger = logging.getLogger(__name__)
 
 _ATTN_ATTR_NAMES = ("self_attn", "attn", "attention", "self_attention")
+
+# Nomes de módulos que NÃO são de atenção mesmo sem filhos (evita falsos positivos)
+_NON_ATTN_MODULE_TYPES = (
+    torch.nn.LayerNorm,
+    torch.nn.Dropout,
+    torch.nn.Embedding,
+    torch.nn.Linear,
+    torch.nn.ReLU,
+    torch.nn.GELU,
+    torch.nn.SiLU,
+)
 
 
 def _find_attention_layers(model: torch.nn.Module) -> list[torch.nn.Module]:
@@ -44,13 +54,21 @@ def _find_attention_layers(model: torch.nn.Module) -> list[torch.nn.Module]:
 
 
 def _find_attention_recursive(model: torch.nn.Module) -> list[torch.nn.Module]:
-    """Busca recursiva por módulos cujo nome contém 'attn' ou 'attention'."""
-    return [
-        module
-        for name, module in model.named_modules()
-        if ("attn" in name.lower() or "attention" in name.lower())
-        and list(module.children()) == []
-    ]
+    """
+    Busca recursiva por módulos de atenção.
+
+    Exclui tipos conhecidos que não são de atenção (LayerNorm, Dropout, etc.)
+    para evitar instalação de hooks em módulos incorretos.
+    """
+    found = []
+    for name, module in model.named_modules():
+        lname = name.lower()
+        is_attn_name = "attn" in lname or "attention" in lname
+        is_leaf = list(module.children()) == []
+        is_non_attn_type = isinstance(module, _NON_ATTN_MODULE_TYPES)
+        if is_attn_name and is_leaf and not is_non_attn_type:
+            found.append(module)
+    return found
 
 
 def _is_past_kv(obj: Any) -> bool:
@@ -60,6 +78,10 @@ def _is_past_kv(obj: Any) -> bool:
     return hasattr(obj, "key_cache") and hasattr(obj, "value_cache")
 
 
+def _tensor_mb(t: torch.Tensor) -> float:
+    return t.element_size() * t.numel() / 1024 ** 2
+
+
 def _process_past_kv(
     pkv: Any,
     quantize_fn: Callable,
@@ -67,9 +89,6 @@ def _process_past_kv(
     tracker: list[float],
 ) -> Any:
     """Quantiza e dequantiza K e V dentro de past_key_value."""
-    def _tensor_mb(t: torch.Tensor) -> float:
-        return t.element_size() * t.numel() / 1024 ** 2
-
     if isinstance(pkv, tuple):
         k, v = pkv
         qk, meta_k = quantize_fn(k)
