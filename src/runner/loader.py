@@ -27,7 +27,6 @@ warnings.filterwarnings("ignore", message=".*past_key_values.*", category=Future
 warnings.filterwarnings("ignore", message=".*do_sample.*top_k.*", category=UserWarning)
 warnings.filterwarnings("ignore", message=".*Cache.*", category=FutureWarning)
 
-# mapeamento de string → torch.dtype
 _DTYPE_MAP: dict[str, torch.dtype] = {
     "fp16": torch.float16,
     "fp32": torch.float32,
@@ -35,7 +34,7 @@ _DTYPE_MAP: dict[str, torch.dtype] = {
 }
 
 
-def _resolve_device(device: str) -> str:
+def _resolve_auto_device(device: str) -> str:
     """Resolve 'auto' para o melhor device disponível."""
     if device != "auto":
         return device
@@ -64,16 +63,36 @@ def _build_bnb_config(wq: dict) -> BitsAndBytesConfig:
     )
 
 
+def _build_load_kwargs(
+    use_bnb: bool,
+    wq: dict,
+    torch_dtype: torch.dtype,
+    device: str,
+) -> tuple[dict, torch.dtype]:
+    """Constrói kwargs para from_pretrained e dtype final efetivo."""
+    kwargs: dict = {"torch_dtype": torch_dtype}
+    if use_bnb:
+        kwargs["quantization_config"] = _build_bnb_config(wq)
+        kwargs["device_map"] = "auto"
+    elif device != "cpu":
+        kwargs["device_map"] = device
+    else:
+        if torch_dtype == torch.float16:
+            console.print("[dim]CPU detectado: convertendo fp16 → fp32 para compatibilidade[/dim]")
+            torch_dtype = torch.float32
+            kwargs["torch_dtype"] = torch_dtype
+    return kwargs, torch_dtype
+
+
 def _log_model_info(model: AutoModelForCausalLM, name: str) -> None:
     """Loga número de parâmetros e estimativa de memória."""
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    mem_fp16_gb = total * 2 / 1024 ** 3
     console.print(
         f"[cyan]Modelo:[/cyan] {name}\n"
         f"  Parâmetros totais : {total / 1e6:.1f}M\n"
         f"  Treináveis        : {trainable / 1e6:.1f}M\n"
-        f"  Memória FP16 est. : {mem_fp16_gb:.2f} GB"
+        f"  Memória FP16 est. : {total * 2 / 1024 ** 3:.2f} GB"
     )
 
 
@@ -81,17 +100,13 @@ def load_model(config: dict) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
     """
     Carrega modelo e tokenizer conforme config dict.
 
-    Parâmetros relevantes no config:
-      model, dtype, device, trust_remote_code, weight_quantization
-
+    Parâmetros relevantes: model, dtype, device, trust_remote_code, weight_quantization.
     Retorna (model, tokenizer) com model em eval mode.
     """
     model_name: str = config["model"]
     dtype_str: str = config.get("dtype", "fp16")
-    device_str: str = config.get("device", "auto")
+    device = _resolve_auto_device(config.get("device", "auto"))
     trust: bool = config.get("trust_remote_code", False)
-
-    device = _resolve_device(device_str)
     torch_dtype = _DTYPE_MAP.get(dtype_str, torch.float16)
 
     wq = config.get("weight_quantization", {})
@@ -100,39 +115,24 @@ def load_model(config: dict) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
     if use_bnb and not _bnb_available():
         bits = wq.get("bits", 4)
         console.print(
-            f"[yellow]⚠ bitsandbytes INT{bits} requer CUDA — não disponível neste ambiente.[/yellow]\n"
+            f"[yellow]⚠ bitsandbytes INT{bits} requer CUDA — não disponível.[/yellow]\n"
             f"[yellow]  Carregando em {dtype_str} sem quantização de pesos.[/yellow]"
         )
         use_bnb = False
 
-    console.print(f"[bold]Carregando modelo[/bold] {model_name}  |  device={device}  |  dtype={dtype_str}  |  bnb={use_bnb}")
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_name,
-        trust_remote_code=trust,
+    console.print(
+        f"[bold]Carregando modelo[/bold] {model_name}  |  "
+        f"device={device}  |  dtype={dtype_str}  |  bnb={use_bnb}"
     )
+
+    tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    load_kwargs: dict = {
-        "trust_remote_code": trust,
-        "torch_dtype": torch_dtype,
-    }
-
-    if use_bnb:
-        load_kwargs["quantization_config"] = _build_bnb_config(wq)
-        load_kwargs["device_map"] = "auto"
-    elif device != "cpu":
-        load_kwargs["device_map"] = device
-    else:
-        # CPU: fp16 não é suportado em todos os ops — usa fp32
-        if torch_dtype == torch.float16:
-            console.print("[dim]CPU detectado: convertendo fp16 → fp32 para compatibilidade[/dim]")
-            torch_dtype = torch.float32
-            load_kwargs["torch_dtype"] = torch_dtype
+    load_kwargs, torch_dtype = _build_load_kwargs(use_bnb, wq, torch_dtype, device)
+    load_kwargs["trust_remote_code"] = trust
 
     model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
-
     if not use_bnb and device == "cpu":
         model = model.to(device)
 

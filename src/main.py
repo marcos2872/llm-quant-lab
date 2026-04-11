@@ -57,13 +57,6 @@ def _patch_model(config: dict, model: str | None) -> dict:
     return config
 
 
-def _resolve_device(model_obj) -> str:
-    try:
-        return str(next(model_obj.parameters()).device)
-    except StopIteration:
-        return "cpu"
-
-
 # ══════════════════════════════════════════════════════════════════════════════
 # FASE 1 — Baseline
 # ══════════════════════════════════════════════════════════════════════════════
@@ -133,15 +126,8 @@ def kv_quant(
     if bits:
         cfg.setdefault("kv_quantization", {})["bits"] = bits
 
-    # salva config modificado temporariamente em memória (não persiste em disco)
-    import tempfile
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
-        yaml.dump(cfg, tmp)
-        tmp_path = Path(tmp.name)
-
     from src.runner.kv_quant import run_kv_quant
-    run_kv_quant(config_path=tmp_path, prompts_file=prompts, output_dir=output_dir)
-    tmp_path.unlink(missing_ok=True)
+    run_kv_quant(prompts_file=prompts, output_dir=output_dir, config_override=cfg)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -160,9 +146,10 @@ def eval_ppl(
     cfg = _load_config(config)
     cfg = _patch_model(cfg, model)
 
+    from src.runner._utils import resolve_device
     from src.runner.loader import load_model
     llm, tokenizer = load_model(cfg)
-    device = _resolve_device(llm)
+    device = resolve_device(llm)
 
     from src.eval.perplexity import eval_perplexity
     result = eval_perplexity(llm, tokenizer, corpus_path=corpus, max_samples=max_samples, device=device)
@@ -189,9 +176,10 @@ def eval_needle_cmd(
     cfg = _load_config(config)
     cfg = _patch_model(cfg, model)
 
+    from src.runner._utils import resolve_device
     from src.runner.loader import load_model
     llm, tokenizer = load_model(cfg)
-    device = _resolve_device(llm)
+    device = resolve_device(llm)
 
     from src.eval.needle import eval_needle
     result = eval_needle(llm, tokenizer, needle_file=needle_file, device=device)
@@ -216,9 +204,10 @@ def eval_tasks(
     cfg = _load_config(config)
     cfg = _patch_model(cfg, model)
 
+    from src.runner._utils import resolve_device
     from src.runner.loader import load_model
     llm, tokenizer = load_model(cfg)
-    device = _resolve_device(llm)
+    device = resolve_device(llm)
 
     from src.eval.task_score import eval_task_score
     result = eval_task_score(llm, tokenizer, prompts_file=prompts, device=device)
