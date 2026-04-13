@@ -78,8 +78,10 @@ def _build_load_kwargs(
     """Constrói kwargs para from_pretrained e dtype final efetivo."""
     kwargs: dict = {"torch_dtype": torch_dtype}
     if use_bnb:
+        # Sem device_map: evita dispatch_model do accelerate, que chama .to(device)
+        # e é bloqueado pelo transformers em modelos 4-bit/8-bit bitsandbytes.
+        # O quantizador bitsandbytes já coloca os pesos direto no CUDA internamente.
         kwargs["quantization_config"] = _build_bnb_config(wq)
-        kwargs["device_map"] = {"" : torch.cuda.current_device()}
     else:
         kwargs["device_map"] = {"": device}
     return kwargs, torch_dtype
