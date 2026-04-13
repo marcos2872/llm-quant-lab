@@ -44,11 +44,13 @@ def measure_prompt(
     max_new_tokens: int,
     device: str,
     kv_mem_tracker: list[float] | None = None,
+    generate_kwargs: dict | None = None,
 ) -> dict:
     """
     Executa um único prompt e retorna dict de métricas.
 
-    kv_mem_tracker: se fornecido, acumula MB de KV quantizado e é limpo após cada prompt.
+    kv_mem_tracker: acumula MB de KV quantizado; limpo após cada prompt.
+    generate_kwargs: repassado para measure_throughput (ex: past_key_values).
     """
     reset_peak()
     weights_mb = current_memory_mb()
@@ -58,6 +60,7 @@ def measure_prompt(
         prompt=entry["prompt"],
         max_new_tokens=max_new_tokens,
         device=device,
+        generate_kwargs=generate_kwargs,
     )
     peak_mb = peak_memory_mb()
 

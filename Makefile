@@ -149,7 +149,9 @@ benchmark-7b:    ## Benchmark completo para Qwen2.5-7B-Instruct
 	  RAW_DIR=results/7b \
 	  OUTPUT_DIR=results/7b/report
 
-benchmark-long:  ## Benchmark completo com contexto longo 4k+ tokens
+benchmark-long:  ## Benchmark completo com contexto longo 4k+ tokens (limpa dados anteriores)
+	@echo "Limpando resultados anteriores em results/long/ ..."
+	@rm -rf results/long
 	$(MAKE) sweep-all \
 	  PROMPTS=benchmarks/prompts/long_context.jsonl \
 	  CONFIG=configs/long_context.yaml \

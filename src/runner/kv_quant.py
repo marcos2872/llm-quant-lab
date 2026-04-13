@@ -1,7 +1,10 @@
 """
 src/runner/kv_quant.py
 -----------------------
-Runner de quantização de KV cache com hooks PyTorch.
+Runner de quantização de KV cache com QuantizedDynamicCache.
+
+Armazena o KV do prefill em formato comprimido (redução real de memória GPU).
+Tokens do decode ficam em buffer FP16 pequeno sem re-quantização.
 
 Saída: results/raw/kv_quant_<method>_<bits>bit_<timestamp>.json
 """
@@ -17,7 +20,6 @@ import yaml
 from rich.console import Console
 from rich.progress import track
 
-from src.quantization.kv_hooks import install_kv_hooks, remove_kv_hooks
 from src.runner._utils import load_prompts, measure_prompt, resolve_device, save_run_json
 from src.runner.loader import load_model
 
@@ -53,7 +55,7 @@ def _get_quant_fns(
     raise ValueError(f"Método desconhecido: {method!r}. Use uniform | kivi | turboquant")
 
 
-def _run_with_hooks(
+def _run_with_cache(
     model: object,
     tokenizer: object,
     prompts: list[dict],
@@ -63,17 +65,25 @@ def _run_with_hooks(
     device: str,
     label: str,
 ) -> list[dict]:
-    """Instala KV hooks, roda prompts e remove hooks via try/finally."""
-    handles, kv_mem_tracker = install_kv_hooks(model, quantize_fn, dequantize_fn)
-    console.print(f"[cyan]Hooks instalados:[/cyan] {len(handles)} camadas")
+    """
+    Roda prompts usando QuantizedDynamicCache por prompt.
+
+    Cada prompt recebe um cache fresco; o tracker mede o MB quantizado
+    do prefill, refletindo a redução real de memória GPU.
+    """
+    from src.quantization.kv_cache import QuantizedDynamicCache
+
     results: list[dict] = []
-    try:
-        for entry in track(prompts, description=label):
-            results.append(
-                measure_prompt(entry, model, tokenizer, max_new_tokens, device, kv_mem_tracker)
+    for entry in track(prompts, description=label):
+        tracker: list[float] = []
+        cache = QuantizedDynamicCache(quantize_fn, dequantize_fn, tracker)
+        results.append(
+            measure_prompt(
+                entry, model, tokenizer, max_new_tokens, device,
+                kv_mem_tracker=tracker,
+                generate_kwargs={"past_key_values": cache},
             )
-    finally:
-        remove_kv_hooks(handles)
+        )
     return results
 
 
@@ -84,10 +94,9 @@ def run_kv_quant(
     config_override: dict | None = None,
 ) -> Path | None:
     """
-    Executa KV cache quantization.
+    Executa KV cache quantization com cache comprimido.
 
     Retorna None se kv_quantization.enabled=false.
-    Garante remoção dos hooks via try/finally.
     """
     config = config_override if config_override is not None else yaml.safe_load(config_path.read_text())
     kv_cfg = config.get("kv_quantization", {})
@@ -108,7 +117,7 @@ def run_kv_quant(
     max_new_tokens = config.get("max_new_tokens", 256)
 
     quantize_fn, dequantize_fn = _get_quant_fns(method, bits, kv_cfg, model_name)
-    results = _run_with_hooks(
+    results = _run_with_cache(
         model, tokenizer, prompts, quantize_fn, dequantize_fn,
         max_new_tokens, device, f"{method} INT{bits}...",
     )
