@@ -22,7 +22,7 @@ PROMPTS    ?= benchmarks/prompts/basic.jsonl
         sweep-weight sweep-kv sweep-all kv-quant-long \
         eval-ppl eval-needle eval-tasks all-eval annotate-all \
         report \
-        benchmark-7b all clean help
+        benchmark-7b benchmark-long all clean help
 
 # ── setup ───────────────────────────────────────────────────────────────────
 setup:           ## Instala dependências e cria .env + pastas
@@ -53,6 +53,8 @@ weight-quant:    ## Roda weight quant  (BITS=4|8|4,8  PROMPTS=... RAW_DIR=... op
 sweep-weight:    ## Roda weight quant INT4 + INT8 em sequência
 	$(MAKE) weight-quant BITS=4,8 \
 	  $(if $(MODEL),MODEL=$(MODEL),) \
+	  $(if $(CONFIG),CONFIG=$(CONFIG),) \
+	  PROMPTS=$(PROMPTS) \
 	  RAW_DIR=$(RAW_DIR)
 
 # ── fase 3: quantização de KV cache ─────────────────────────────────────────
@@ -133,7 +135,12 @@ report:          ## Gera summary.csv + gráficos  (RAW_DIR=... OUTPUT_DIR=... op
 	  --output-dir $(OUTPUT_DIR)
 
 # ── pipelines completos ───────────────────────────────────────────────────────
-sweep-all: baseline sweep-weight sweep-kv annotate-all report  ## Benchmark completo — todos os modos
+sweep-all: ## Benchmark completo — todos os modos  (PROMPTS=... CONFIG=... RAW_DIR=... opcionais)
+	$(MAKE) baseline     $(if $(MODEL),MODEL=$(MODEL),) PROMPTS=$(PROMPTS) $(if $(CONFIG),CONFIG=$(CONFIG),) RAW_DIR=$(RAW_DIR)
+	$(MAKE) sweep-weight $(if $(MODEL),MODEL=$(MODEL),) PROMPTS=$(PROMPTS) $(if $(CONFIG),CONFIG=$(CONFIG),) RAW_DIR=$(RAW_DIR)
+	$(MAKE) sweep-kv     $(if $(MODEL),MODEL=$(MODEL),) PROMPTS=$(PROMPTS) $(if $(CONFIG),CONFIG=$(CONFIG),) RAW_DIR=$(RAW_DIR)
+	$(MAKE) annotate-all RAW_DIR=$(RAW_DIR)
+	$(MAKE) report       RAW_DIR=$(RAW_DIR) OUTPUT_DIR=$(OUTPUT_DIR)
 	@echo "✓ Benchmark completo → $(OUTPUT_DIR)/"
 
 benchmark-7b:    ## Benchmark completo para Qwen2.5-7B-Instruct
@@ -141,6 +148,13 @@ benchmark-7b:    ## Benchmark completo para Qwen2.5-7B-Instruct
 	  MODEL=Qwen/Qwen2.5-7B-Instruct \
 	  RAW_DIR=results/7b \
 	  OUTPUT_DIR=results/7b/report
+
+benchmark-long:  ## Benchmark completo com contexto longo 4k+ tokens
+	$(MAKE) sweep-all \
+	  PROMPTS=benchmarks/prompts/long_context.jsonl \
+	  CONFIG=configs/long_context.yaml \
+	  RAW_DIR=results/long \
+	  OUTPUT_DIR=results/long/report
 
 all: baseline weight-quant kv-quant annotate-all report  ## Pipeline básico (1 config por modo)
 	@echo "✓ Pipeline básico finalizado → $(OUTPUT_DIR)/"
