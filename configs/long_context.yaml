@@ -1,0 +1,9 @@
+# configs/long_context.yaml
+# Configuração para benchmark de contexto longo (4k+ tokens)
+# Use com: make baseline PROMPTS=benchmarks/prompts/long_context.jsonl CONFIG=configs/long_context.yaml
+
+device: cuda
+dtype: fp16
+max_new_tokens: 64       # resposta curta — o interesse é no contexto de entrada
+model: Qwen/Qwen2.5-7B-Instruct
+trust_remote_code: false

@@ -15,10 +15,11 @@ CONFIG     ?=
 RAW_DIR    ?= results/raw
 OUTPUT_DIR ?= results/reports
 RESULT_JSON ?=
+PROMPTS    ?= benchmarks/prompts/basic.jsonl
 
 .PHONY: setup env \
         baseline weight-quant kv-quant \
-        sweep-weight sweep-kv sweep-all \
+        sweep-weight sweep-kv sweep-all kv-quant-long \
         eval-ppl eval-needle eval-tasks all-eval annotate-all \
         report \
         benchmark-7b all clean help
@@ -33,18 +34,20 @@ env:             ## Só instala dependências (sem criar .env)
 	uv sync
 
 # ── fase 1: baseline ────────────────────────────────────────────────────────
-baseline:        ## Roda inferência FP16 baseline  (MODEL=... RAW_DIR=... opcionais)
+baseline:        ## Roda inferência FP16 baseline  (MODEL=... PROMPTS=... RAW_DIR=... opcionais)
 	$(PYTHON) -m $(SRC) baseline \
 	  $(if $(MODEL),--model $(MODEL),) \
 	  $(if $(CONFIG),--config $(CONFIG),) \
+	  --prompts $(PROMPTS) \
 	  --output-dir $(RAW_DIR)
 
 # ── fase 2: quantização de pesos ────────────────────────────────────────────
-weight-quant:    ## Roda weight quant  (BITS=4|8|4,8  RAW_DIR=... opcionais)
+weight-quant:    ## Roda weight quant  (BITS=4|8|4,8  PROMPTS=... RAW_DIR=... opcionais)
 	$(PYTHON) -m $(SRC) weight-quant \
 	  $(if $(MODEL),--model $(MODEL),) \
 	  $(if $(BITS),--bits $(BITS),) \
 	  $(if $(CONFIG),--config $(CONFIG),) \
+	  --prompts $(PROMPTS) \
 	  --output-dir $(RAW_DIR)
 
 sweep-weight:    ## Roda weight quant INT4 + INT8 em sequência
@@ -53,21 +56,29 @@ sweep-weight:    ## Roda weight quant INT4 + INT8 em sequência
 	  RAW_DIR=$(RAW_DIR)
 
 # ── fase 3: quantização de KV cache ─────────────────────────────────────────
-kv-quant:        ## Roda KV cache quant  (METHOD=turboquant|kivi|uniform  BITS=4|2  RAW_DIR=...)
+kv-quant:        ## Roda KV cache quant  (METHOD=turboquant|kivi|uniform  BITS=4|2  PROMPTS=...  RAW_DIR=...)
 	$(PYTHON) -m $(SRC) kv-quant \
 	  $(if $(MODEL),--model $(MODEL),) \
 	  $(if $(METHOD),--method $(METHOD),) \
 	  $(if $(BITS),--bits $(BITS),) \
 	  $(if $(CONFIG),--config $(CONFIG),) \
+	  --prompts $(PROMPTS) \
 	  --output-dir $(RAW_DIR)
 
 sweep-kv:        ## Roda KV cache quant — 3 métodos × bits 4 e 2 (6 runs)
-	$(MAKE) kv-quant METHOD=uniform    BITS=4 $(if $(MODEL),MODEL=$(MODEL),) RAW_DIR=$(RAW_DIR)
-	$(MAKE) kv-quant METHOD=kivi       BITS=4 $(if $(MODEL),MODEL=$(MODEL),) RAW_DIR=$(RAW_DIR)
-	$(MAKE) kv-quant METHOD=turboquant BITS=4 $(if $(MODEL),MODEL=$(MODEL),) RAW_DIR=$(RAW_DIR)
-	$(MAKE) kv-quant METHOD=uniform    BITS=2 $(if $(MODEL),MODEL=$(MODEL),) RAW_DIR=$(RAW_DIR)
-	$(MAKE) kv-quant METHOD=kivi       BITS=2 $(if $(MODEL),MODEL=$(MODEL),) RAW_DIR=$(RAW_DIR)
-	$(MAKE) kv-quant METHOD=turboquant BITS=2 $(if $(MODEL),MODEL=$(MODEL),) RAW_DIR=$(RAW_DIR)
+	$(MAKE) kv-quant METHOD=uniform    BITS=4 $(if $(MODEL),MODEL=$(MODEL),) PROMPTS=$(PROMPTS) RAW_DIR=$(RAW_DIR)
+	$(MAKE) kv-quant METHOD=kivi       BITS=4 $(if $(MODEL),MODEL=$(MODEL),) PROMPTS=$(PROMPTS) RAW_DIR=$(RAW_DIR)
+	$(MAKE) kv-quant METHOD=turboquant BITS=4 $(if $(MODEL),MODEL=$(MODEL),) PROMPTS=$(PROMPTS) RAW_DIR=$(RAW_DIR)
+	$(MAKE) kv-quant METHOD=uniform    BITS=2 $(if $(MODEL),MODEL=$(MODEL),) PROMPTS=$(PROMPTS) RAW_DIR=$(RAW_DIR)
+	$(MAKE) kv-quant METHOD=kivi       BITS=2 $(if $(MODEL),MODEL=$(MODEL),) PROMPTS=$(PROMPTS) RAW_DIR=$(RAW_DIR)
+	$(MAKE) kv-quant METHOD=turboquant BITS=2 $(if $(MODEL),MODEL=$(MODEL),) PROMPTS=$(PROMPTS) RAW_DIR=$(RAW_DIR)
+
+kv-quant-long:   ## KV cache quant com contexto longo 4k+ tokens (3 métodos × bits 4 e 2)
+	$(MAKE) sweep-kv \
+	  PROMPTS=benchmarks/prompts/long_context.jsonl \
+	  CONFIG=configs/long_context.yaml \
+	  $(if $(MODEL),MODEL=$(MODEL),) \
+	  RAW_DIR=$(RAW_DIR)
 
 # ── fase 4: avaliação de qualidade ──────────────────────────────────────────
 eval-ppl:        ## Calcula perplexidade  (CONFIG=... RESULT_JSON=... opcionais)
@@ -140,5 +151,5 @@ clean:           ## Remove artefatos gerados (raw JSONs, CSVs, PNGs)
 	rm -f results/reports/*.csv results/reports/*.png
 
 help:            ## Lista todos os targets disponíveis
-	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) \
+	@grep -hE '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN {FS = ":.*##"}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
