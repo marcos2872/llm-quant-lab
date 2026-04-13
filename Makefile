@@ -21,6 +21,7 @@ PROMPTS    ?= benchmarks/prompts/basic.jsonl
         baseline weight-quant kv-quant \
         sweep-weight sweep-kv sweep-all kv-quant-long \
         eval-ppl eval-needle eval-tasks all-eval annotate-all \
+        context-sweep context-report \
         report \
         benchmark-7b benchmark-long all clean help
 
@@ -131,6 +132,17 @@ all-eval: annotate-all  ## Alias para annotate-all
 # ── fase 5: relatório ────────────────────────────────────────────────────────
 report:          ## Gera summary.csv + gráficos  (RAW_DIR=... OUTPUT_DIR=... opcionais)
 	$(PYTHON) -m $(SRC) report \
+	  --raw-dir $(RAW_DIR) \
+	  --output-dir $(OUTPUT_DIR)
+
+context-sweep:   ## Benchmark de escalonamento de contexto (512→4096 tokens)
+	$(PYTHON) -m $(SRC) context-sweep \
+	  $(if $(MODEL),--model $(MODEL),) \
+	  $(if $(CONFIG),--config $(CONFIG),) \
+	  --output-dir $(RAW_DIR)
+
+context-report:  ## Gera context_scaling.png a partir dos dados de context-sweep
+	$(PYTHON) -m $(SRC) context-report \
 	  --raw-dir $(RAW_DIR) \
 	  --output-dir $(OUTPUT_DIR)
 

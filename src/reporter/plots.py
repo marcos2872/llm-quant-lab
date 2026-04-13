@@ -3,10 +3,13 @@ src/reporter/plots.py
 ----------------------
 Gera gráficos comparativos a partir do DataFrame de resultados consolidados.
 
-Gráficos:
+Gráficos gerados por generate_all_plots:
   1. memory_comparison.png    — barras empilhadas: pesos + KV por configuração
   2. throughput_comparison.png — barras agrupadas: tok/s prefill e decode
-  3. quality_tradeoff.png     — scatter: compressão × perplexidade, needle recall e F1
+  3. quality_tradeoff.png     — scatter: compressão × perplexidade, needle e F1
+  4. kv_cache_detail.png      — kv_mem_mb por método com linha de referência FP16
+  5. latency_breakdown.png    — TTFT + TPOT por configuração
+  6. pareto_frontier.png      — fronteira de Pareto: memória × perplexidade
 """
 
 from __future__ import annotations
@@ -190,10 +193,112 @@ def plot_quality_tradeoff(df: pd.DataFrame, output_dir: Path = _OUTPUT_DIR) -> P
     return _savefig(fig, output_dir, "quality_tradeoff.png")
 
 
+def plot_kv_cache_detail(df: pd.DataFrame, output_dir: Path = _OUTPUT_DIR) -> Path:
+    """Barras de kv_mem_mb para cada método KV quant + linha de referência FP16."""
+    kv_df = df[df["run_type"] == "kv_quant"].copy()
+    if kv_df.empty:
+        return Path()
+    kv_df["label"] = kv_df.apply(_mode_label, axis=1)
+    baseline_rows = df[df["run_type"] == "baseline"]
+    baseline_kv = baseline_rows["kv_mem_mb"].iloc[0] if not baseline_rows.empty else None
+
+    n = len(kv_df)
+    x = range(n)
+    fig, ax = plt.subplots(figsize=(_fig_width(n), 5))
+    bars = ax.bar(x, kv_df["kv_mem_mb"], color="#DD8452")
+    _bar_value_labels(ax, bars, fmt="{:.1f}")
+    if baseline_kv:
+        ax.axhline(
+            baseline_kv, color="#C44E52", linestyle="--", linewidth=1.5,
+            label=f"baseline FP16 ({baseline_kv:.0f} MB)",
+        )
+        ax.legend()
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(kv_df["label"], rotation=30, ha="right", fontsize=9)
+    ax.set_ylabel("KV Cache (MB)")
+    ax.set_title("Compressão do KV Cache por Método")
+    plt.tight_layout()
+    return _savefig(fig, output_dir, "kv_cache_detail.png")
+
+
+def plot_latency_breakdown(df: pd.DataFrame, output_dir: Path = _OUTPUT_DIR) -> Path:
+    """Barras agrupadas: TTFT (first token) e TPOT (tempo por token de saída)."""
+    if df.empty:
+        return Path()
+    df = df.copy()
+    df["label"] = df.apply(_mode_label, axis=1)
+    df["ttft_ms"] = (df["first_token_latency_s"] * 1000).round(1)
+    df["tpot_ms"] = ((df["total_time_s"] / df["output_tokens"].replace(0, 1)) * 1000).round(1)
+
+    n = len(df)
+    x = list(range(n))
+    width = 0.35
+    fig, ax = plt.subplots(figsize=(_fig_width(n), 5))
+    bars_t = ax.bar([i - width / 2 for i in x], df["ttft_ms"], width, label="TTFT (ms)", color="#C44E52")
+    bars_p = ax.bar([i + width / 2 for i in x], df["tpot_ms"], width, label="TPOT (ms/tok)", color="#8172B2")
+    _bar_value_labels(ax, bars_t, fmt="{:.1f}")
+    _bar_value_labels(ax, bars_p, fmt="{:.1f}")
+    ax.set_xticks(x)
+    ax.set_xticklabels(df["label"], rotation=30, ha="right", fontsize=9)
+    ax.set_ylabel("Latência (ms)")
+    ax.set_title("Latência: Primeiro Token (TTFT) e Por Token (TPOT)")
+    ax.legend()
+    plt.tight_layout()
+    return _savefig(fig, output_dir, "latency_breakdown.png")
+
+
+def _pareto_front(df: pd.DataFrame, x_col: str, y_col: str) -> pd.DataFrame:
+    """Retorna pontos da fronteira de Pareto (minimiza x e y simultaneamente)."""
+    sorted_df = df.sort_values(x_col)
+    pareto: list[pd.Series] = []
+    min_y = float("inf")
+    for _, row in sorted_df.iterrows():
+        if row[y_col] <= min_y:
+            pareto.append(row)
+            min_y = row[y_col]
+    return pd.DataFrame(pareto)
+
+
+def plot_pareto_frontier(df: pd.DataFrame, output_dir: Path = _OUTPUT_DIR) -> Path:
+    """Scatter memória × perplexidade com fronteira de Pareto ótima destacada."""
+    sub = df.dropna(subset=["perplexity"]).copy()
+    if sub.empty:
+        return Path()
+    sub["label"] = sub.apply(_mode_label, axis=1)
+    pareto = _pareto_front(sub, "peak_mem_mb", "perplexity")
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    sc = ax.scatter(
+        sub["peak_mem_mb"], sub["perplexity"],
+        c=sub["bits"], cmap="viridis", s=100, zorder=3,
+    )
+    if len(pareto) > 1:
+        ax.plot(
+            pareto["peak_mem_mb"], pareto["perplexity"],
+            "r--", linewidth=1.5, label="Fronteira de Pareto", zorder=2,
+        )
+    for _, row in sub.iterrows():
+        ax.annotate(
+            row["label"], (row["peak_mem_mb"], row["perplexity"]),
+            textcoords="offset points", xytext=(6, 4), fontsize=7,
+        )
+    plt.colorbar(sc, ax=ax, label="bits")
+    ax.set_xlabel("Memória Pico (MB)")
+    ax.set_ylabel("Perplexidade (↓ melhor)")
+    ax.set_title("Fronteira de Pareto: Memória × Qualidade")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    return _savefig(fig, output_dir, "pareto_frontier.png")
+
+
 def generate_all_plots(df: pd.DataFrame, output_dir: Path = _OUTPUT_DIR) -> list[Path]:
     """Gera todos os gráficos e retorna lista de caminhos."""
     return [
         plot_memory_comparison(df, output_dir),
         plot_throughput_comparison(df, output_dir),
         plot_quality_tradeoff(df, output_dir),
+        plot_kv_cache_detail(df, output_dir),
+        plot_latency_breakdown(df, output_dir),
+        plot_pareto_frontier(df, output_dir),
     ]

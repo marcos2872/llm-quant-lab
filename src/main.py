@@ -247,6 +247,39 @@ def report(
     console.print(f"\n[bold green]✓ Relatório completo em {output_dir}/[/bold green]")
 
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# FASE 6 — Context Sweep
+# ══════════════════════════════════════════════════════════════════════════════
+
+@app.command(name="context-sweep")
+def context_sweep(
+    config: Annotated[Path, typer.Option("--config", "-c")] = Path("configs/baseline.yaml"),
+    output_dir: Annotated[Path, typer.Option("--output-dir", "-o")] = Path("results/raw"),
+    bits: Annotated[int, typer.Option("--bits")] = 4,
+    model: Annotated[str | None, typer.Option("--model", "-m")] = None,
+) -> None:
+    """Benchmark de escalonamento de contexto (512→4096 tokens) com KV quant."""
+    cfg = _load_config(config)
+    cfg = _patch_model(cfg, model)
+
+    from src.runner.context_sweep import run_context_sweep
+    out = run_context_sweep(config_path=config, bits=bits, output_dir=output_dir)
+    console.print(f"[bold green]✓ Salvo:[/bold green] {out}")
+
+
+@app.command(name="context-report")
+def context_report(
+    raw_dir: Annotated[Path, typer.Option("--raw-dir")] = Path("results/raw"),
+    output_dir: Annotated[Path, typer.Option("--output-dir")] = Path("results/reports"),
+) -> None:
+    """Gera context_scaling.png a partir dos dados de context-sweep."""
+    from src.reporter.context_plots import generate_context_report
+    paths = generate_context_report(raw_dir=raw_dir, output_dir=output_dir)
+    if paths:
+        console.print(f"[bold green]✓ Gráfico em {output_dir}/[/bold green]")
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Entry point
 # ══════════════════════════════════════════════════════════════════════════════
