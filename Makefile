@@ -3,8 +3,12 @@ PYTHON     := uv run python
 RUN        := uv run
 SRC        := src.main
 
-# defaults configuráveis via linha de comando
-MODEL      ?=
+# Carrega .env se existir (define MODEL_NAME, HF_TOKEN, DEVICE…)
+-include .env
+export MODEL_NAME
+
+# MODEL usa MODEL_NAME do .env como padrão; pode ser sobrescrito na linha de comando
+MODEL      ?= $(MODEL_NAME)
 BITS       ?=
 METHOD     ?= turboquant
 CONFIG     ?=

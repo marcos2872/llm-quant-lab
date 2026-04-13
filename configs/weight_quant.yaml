@@ -1,7 +1,7 @@
 # configs/weight_quant.yaml
 # Configuração do runner de quantização de pesos (bitsandbytes)
 
-model: Qwen/Qwen2.5-1.5B-Instruct
+model: Qwen/Qwen2.5-7B-Instruct
 dtype: fp16
 device: cuda
 max_new_tokens: 256

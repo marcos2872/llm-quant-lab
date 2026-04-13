@@ -4,5 +4,5 @@
 device: cuda
 dtype: fp16
 max_new_tokens: 256
-model: Qwen/Qwen2.5-1.5B-Instruct
+model: Qwen/Qwen2.5-7B-Instruct
 trust_remote_code: false
