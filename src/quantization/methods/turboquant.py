@@ -82,9 +82,11 @@ def _split_channels(
 
     Garante que normal_idx seja dtype=int64 mesmo quando a lista fica vazia.
     """
-    channel_var = flat.var(dim=0)
+    # abs().mean() detecta canais com alta magnitude média (mais correto que var,
+    # que falha para outliers constantes com variância zero)
+    channel_score = flat.abs().mean(dim=0)
     n_outliers = min(outlier_channels, head_dim)
-    _, outlier_idx = channel_var.topk(n_outliers)
+    _, outlier_idx = channel_score.topk(n_outliers)
     outlier_idx, _ = outlier_idx.sort()
     outlier_set = set(outlier_idx.tolist())
     normal_idx = torch.tensor(

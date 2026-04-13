@@ -32,7 +32,8 @@ def quantize_uniform(
     scale = (t_max - t_min) / (n_levels - 1) if t_max != t_min else 1.0
 
     quantized = ((tensor.float() - t_min) / scale).round().clamp(0, n_levels - 1)
-    dtype = torch.int8 if bits <= 8 else torch.int16
+    # int8 suporta apenas -128..127; para 8 bits os índices chegam a 255 → overflow
+    dtype = torch.int8 if bits < 8 else torch.int16
     quantized = quantized.to(dtype)
 
     meta = {"scale": scale, "zero_point": t_min, "shape": tensor.shape, "dtype": str(tensor.dtype)}
