@@ -75,6 +75,12 @@ def run_weight_quant(
     """
     base_config = yaml.safe_load(config_path.read_text())
     wq = base_config.get("weight_quantization", {})
+
+    # bits_list via CLI sobrescreve enabled=false do config
+    if bits_list:
+        base_config.setdefault("weight_quantization", {})["enabled"] = True
+        wq = base_config["weight_quantization"]
+
     if not wq.get("enabled", False):
         console.print("[yellow]weight_quantization.enabled=false — abortando[/yellow]")
         return []

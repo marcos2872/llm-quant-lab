@@ -123,6 +123,7 @@ def kv_quant(
 
     if method:
         cfg.setdefault("kv_quantization", {})["method"] = method
+        cfg.setdefault("kv_quantization", {})["enabled"] = True
     if bits:
         cfg.setdefault("kv_quantization", {})["bits"] = bits
 
