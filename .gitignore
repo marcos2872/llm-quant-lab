@@ -31,6 +31,9 @@ results/reports/*.csv
 results/reports/*.png
 !results/reports/.gitkeep
 
+# ── Resultados de benchmark longo (reproduzíveis via make benchmark-long) ────
+results/long/
+
 # ── Ambiente ──────────────────────────────────────────────────────────────────
 .env
 # .env.example é trackeado — template sem segredos
