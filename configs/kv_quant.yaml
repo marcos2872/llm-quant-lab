@@ -3,7 +3,7 @@
 
 model: Qwen/Qwen2.5-1.5B-Instruct
 dtype: fp16
-device: auto
+device: cuda
 max_new_tokens: 256
 trust_remote_code: false
 

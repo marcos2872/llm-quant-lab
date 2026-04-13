@@ -6,7 +6,7 @@ Carrega modelo e tokenizer a partir de um dicionário de configuração.
 Suporta:
   - dtype FP16 / FP32 / BF16
   - quantização de pesos via bitsandbytes (INT8 / INT4)
-  - device auto / cpu / cuda / mps
+  - device cuda (NVIDIA obrigatório; auto resolve para cuda)
 """
 
 from __future__ import annotations
@@ -34,15 +34,21 @@ _DTYPE_MAP: dict[str, torch.dtype] = {
 }
 
 
+def _require_cuda() -> None:
+    """Garante que CUDA está disponível; aborta com mensagem clara caso contrário."""
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "CUDA não encontrado. Este projeto requer uma GPU NVIDIA com drivers CUDA.\n"
+            "Verifique: nvidia-smi e torch.cuda.is_available()."
+        )
+
+
 def _resolve_auto_device(device: str) -> str:
-    """Resolve 'auto' para o melhor device disponível."""
+    """Resolve 'auto' para cuda; exige CUDA disponível."""
+    _require_cuda()
     if device != "auto":
         return device
-    if torch.cuda.is_available():
-        return "cuda"
-    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+    return "cuda"
 
 
 def _bnb_available() -> bool:
@@ -73,14 +79,9 @@ def _build_load_kwargs(
     kwargs: dict = {"torch_dtype": torch_dtype}
     if use_bnb:
         kwargs["quantization_config"] = _build_bnb_config(wq)
-        kwargs["device_map"] = "auto"
-    elif device != "cpu":
-        kwargs["device_map"] = device
+        kwargs["device_map"] = {"" : torch.cuda.current_device()}
     else:
-        if torch_dtype == torch.float16:
-            console.print("[dim]CPU detectado: convertendo fp16 → fp32 para compatibilidade[/dim]")
-            torch_dtype = torch.float32
-            kwargs["torch_dtype"] = torch_dtype
+        kwargs["device_map"] = {"": device}
     return kwargs, torch_dtype
 
 
@@ -133,8 +134,6 @@ def load_model(config: dict) -> tuple[AutoModelForCausalLM, AutoTokenizer]:
     load_kwargs["trust_remote_code"] = trust
 
     model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
-    if not use_bnb and device == "cpu":
-        model = model.to(device)
 
     model.eval()
     _log_model_info(model, model_name)
