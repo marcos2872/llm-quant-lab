@@ -4,9 +4,9 @@ src/reporter/plots.py
 Gera gráficos comparativos a partir do DataFrame de resultados consolidados.
 
 Gráficos:
-  1. memory_comparison.png   — barras: pesos + KV por configuração
-  2. throughput_comparison.png — barras: tok/s prefill e decode
-  3. quality_tradeoff.png    — scatter: compressão × qualidade
+  1. memory_comparison.png    — barras empilhadas: pesos + KV por configuração
+  2. throughput_comparison.png — barras agrupadas: tok/s prefill e decode
+  3. quality_tradeoff.png     — scatter: compressão × perplexidade, needle recall e F1
 """
 
 from __future__ import annotations
@@ -22,19 +22,44 @@ _OUTPUT_DIR = Path("results/reports")
 
 
 def _mode_label(row: pd.Series) -> str:
-    method = row.get("method", "none")
-    if method and method != "none":
-        return f"{method}\n{row['bits']}bit"
-    return row.get("quant_mode", "") or "baseline"
+    """Gera label legível por configuração."""
+    run_type = str(row.get("run_type", ""))
+    method = str(row.get("method") or "none")
+    bits = int(row.get("bits", 16))
+    if run_type == "baseline":
+        return "baseline"
+    if run_type == "weight_quant":
+        return f"weight\nINT{bits}"
+    if run_type == "kv_quant" and method != "none":
+        return f"{method}\n{bits}bit"
+    return str(row.get("quant_mode", ""))
+
+
+def _fig_width(n: int, per_bar: float = 2.2, min_w: float = 8.0) -> float:
+    """Largura de figura proporcional ao número de barras."""
+    return max(min_w, n * per_bar)
 
 
 def _savefig(fig: plt.Figure, output_dir: Path, name: str) -> Path:
     out = output_dir / name
     output_dir.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out, dpi=150)
+    fig.savefig(out, dpi=150, bbox_inches="tight")
     plt.close(fig)
     console.print(f"[green]✓[/green] {out}")
     return out
+
+
+def _bar_value_labels(ax: plt.Axes, bars: list, fmt: str = "{:.0f}", fontsize: int = 7) -> None:
+    """Adiciona rótulo de valor no topo de cada barra."""
+    for bar in bars:
+        h = bar.get_height()
+        if h > 0:
+            ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                h + h * 0.01,
+                fmt.format(h),
+                ha="center", va="bottom", fontsize=fontsize,
+            )
 
 
 def plot_memory_comparison(df: pd.DataFrame, output_dir: Path = _OUTPUT_DIR) -> Path:
@@ -43,10 +68,15 @@ def plot_memory_comparison(df: pd.DataFrame, output_dir: Path = _OUTPUT_DIR) -> 
         return Path()
     df = df.copy()
     df["label"] = df.apply(_mode_label, axis=1)
-    x = range(len(df))
-    fig, ax = plt.subplots(figsize=(10, 5))
+    n = len(df)
+    x = range(n)
+    fig, ax = plt.subplots(figsize=(_fig_width(n), 5))
     ax.bar(x, df["weights_mb"], label="Pesos (MB)", color="#4C72B0")
     ax.bar(x, df["kv_mem_mb"], bottom=df["weights_mb"], label="KV Cache (MB)", color="#DD8452")
+    # rótulo do total no topo de cada barra
+    for i, (w, k) in enumerate(zip(df["weights_mb"], df["kv_mem_mb"])):
+        total = w + k
+        ax.text(i, total + total * 0.01, f"{total:.0f}", ha="center", va="bottom", fontsize=7)
     ax.set_xticks(list(x))
     ax.set_xticklabels(df["label"], rotation=30, ha="right", fontsize=9)
     ax.set_ylabel("Memória (MB)")
@@ -62,11 +92,20 @@ def plot_throughput_comparison(df: pd.DataFrame, output_dir: Path = _OUTPUT_DIR)
         return Path()
     df = df.copy()
     df["label"] = df.apply(_mode_label, axis=1)
-    x = list(range(len(df)))
+    n = len(df)
+    x = list(range(n))
     width = 0.35
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.bar([i - width / 2 for i in x], df["prefill_tok_s"], width, label="Prefill (tok/s)", color="#4C72B0")
-    ax.bar([i + width / 2 for i in x], df["decode_tok_s"], width, label="Decode (tok/s)", color="#55A868")
+    fig, ax = plt.subplots(figsize=(_fig_width(n), 5))
+    bars_p = ax.bar(
+        [i - width / 2 for i in x], df["prefill_tok_s"],
+        width, label="Prefill (tok/s)", color="#4C72B0",
+    )
+    bars_d = ax.bar(
+        [i + width / 2 for i in x], df["decode_tok_s"],
+        width, label="Decode (tok/s)", color="#55A868",
+    )
+    _bar_value_labels(ax, bars_p)
+    _bar_value_labels(ax, bars_d)
     ax.set_xticks(x)
     ax.set_xticklabels(df["label"], rotation=30, ha="right", fontsize=9)
     ax.set_ylabel("Tokens / segundo")
@@ -83,14 +122,49 @@ def _scatter_subplot(
     y_label: str,
     title: str,
 ) -> None:
-    """Renderiza um subplot scatter compressão × métrica de qualidade."""
-    sub = df.dropna(subset=[y_col])
+    """
+    Scatter compressão × métrica de qualidade.
+
+    Pontos com coordenadas idênticas têm labels combinados para evitar
+    sobreposição. Grupos distintos alternam lado do rótulo.
+    """
+    sub = df.dropna(subset=[y_col]).copy()
     if sub.empty:
         return
-    sc = ax.scatter(sub["compression_ratio"], sub[y_col], c=sub["bits"], cmap="viridis", s=100, zorder=3)
+
+    sc = ax.scatter(
+        sub["compression_ratio"], sub[y_col],
+        c=sub["bits"], cmap="viridis", s=90, zorder=3,
+    )
+
+    # Agrupa labels por coordenada arredondada
+    sub["_key"] = (
+        sub["compression_ratio"].round(3).astype(str)
+        + "_"
+        + sub[y_col].round(3).astype(str)
+    )
+    groups: dict[str, dict] = {}
     for _, row in sub.iterrows():
-        ax.annotate(row["label"], (row["compression_ratio"], row[y_col]),
-                    textcoords="offset points", xytext=(5, 5), fontsize=7)
+        k = row["_key"]
+        if k not in groups:
+            groups[k] = {"x": row["compression_ratio"], "y": row[y_col], "labels": []}
+        groups[k]["labels"].append(row["label"])
+
+    # Alterna posição dos rótulos para grupos diferentes
+    _offsets = [(7, 7), (7, -17), (-62, 7), (-62, -17), (7, 22), (7, -30)]
+    for i, g in enumerate(groups.values()):
+        ox, oy = _offsets[i % len(_offsets)]
+        combined = " /\n".join(g["labels"])
+        has_arrow = len(g["labels"]) > 1
+        ax.annotate(
+            combined,
+            (g["x"], g["y"]),
+            textcoords="offset points",
+            xytext=(ox, oy),
+            fontsize=7,
+            arrowprops=dict(arrowstyle="-", color="#aaaaaa", lw=0.5) if has_arrow else None,
+        )
+
     plt.colorbar(sc, ax=ax, label="bits")
     ax.set_xlabel("Compressão de memória (×)")
     ax.set_ylabel(y_label)
@@ -99,7 +173,7 @@ def _scatter_subplot(
 
 
 def plot_quality_tradeoff(df: pd.DataFrame, output_dir: Path = _OUTPUT_DIR) -> Path:
-    """Scatter: compressão de memória × perplexidade e needle recall."""
+    """Scatter: compressão × perplexidade, needle recall e task F1."""
     if df.empty:
         return Path()
     df = df.copy()
@@ -108,9 +182,10 @@ def plot_quality_tradeoff(df: pd.DataFrame, output_dir: Path = _OUTPUT_DIR) -> P
     ref_mem = baseline_mem.iloc[0] if not baseline_mem.empty else df["peak_mem_mb"].max()
     df["compression_ratio"] = ref_mem / df["peak_mem_mb"].replace(0, float("nan"))
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    _scatter_subplot(axes[0], df, "perplexity", "Perplexidade (↓ melhor)", "Compressão × Perplexidade")
+    fig, axes = plt.subplots(1, 3, figsize=(21, 5))
+    _scatter_subplot(axes[0], df, "perplexity",    "Perplexidade (↓ melhor)",  "Compressão × Perplexidade")
     _scatter_subplot(axes[1], df, "needle_recall", "Needle Recall (↑ melhor)", "Compressão × Needle Recall")
+    _scatter_subplot(axes[2], df, "task_f1",       "Task F1 (↑ melhor)",       "Compressão × Task F1")
     plt.tight_layout()
     return _savefig(fig, output_dir, "quality_tradeoff.png")
 

@@ -14,9 +14,10 @@ RESULT_JSON ?=
 
 .PHONY: setup env \
         baseline weight-quant kv-quant \
+        sweep-weight sweep-kv sweep-all \
         eval-ppl eval-needle eval-tasks all-eval annotate-all \
         report \
-        all clean help
+        benchmark-7b all clean help
 
 # ── setup ───────────────────────────────────────────────────────────────────
 setup:           ## Instala dependências e cria .env + pastas
@@ -35,21 +36,34 @@ baseline:        ## Roda inferência FP16 baseline  (MODEL=... RAW_DIR=... opcio
 	  --output-dir $(RAW_DIR)
 
 # ── fase 2: quantização de pesos ────────────────────────────────────────────
-weight-quant:    ## Roda weight quant  (BITS=4|4,8  RAW_DIR=... opcionais)
+weight-quant:    ## Roda weight quant  (BITS=4|8|4,8  RAW_DIR=... opcionais)
 	$(PYTHON) -m $(SRC) weight-quant \
 	  $(if $(MODEL),--model $(MODEL),) \
 	  $(if $(BITS),--bits $(BITS),) \
 	  $(if $(CONFIG),--config $(CONFIG),) \
 	  --output-dir $(RAW_DIR)
 
+sweep-weight:    ## Roda weight quant INT4 + INT8 em sequência
+	$(MAKE) weight-quant BITS=4,8 \
+	  $(if $(MODEL),MODEL=$(MODEL),) \
+	  RAW_DIR=$(RAW_DIR)
+
 # ── fase 3: quantização de KV cache ─────────────────────────────────────────
-kv-quant:        ## Roda KV cache quant  (METHOD=turboquant|kivi|uniform  BITS=4  RAW_DIR=...)
+kv-quant:        ## Roda KV cache quant  (METHOD=turboquant|kivi|uniform  BITS=4|2  RAW_DIR=...)
 	$(PYTHON) -m $(SRC) kv-quant \
 	  $(if $(MODEL),--model $(MODEL),) \
 	  $(if $(METHOD),--method $(METHOD),) \
 	  $(if $(BITS),--bits $(BITS),) \
 	  $(if $(CONFIG),--config $(CONFIG),) \
 	  --output-dir $(RAW_DIR)
+
+sweep-kv:        ## Roda KV cache quant — 3 métodos × bits 4 e 2 (6 runs)
+	$(MAKE) kv-quant METHOD=uniform    BITS=4 $(if $(MODEL),MODEL=$(MODEL),) RAW_DIR=$(RAW_DIR)
+	$(MAKE) kv-quant METHOD=kivi       BITS=4 $(if $(MODEL),MODEL=$(MODEL),) RAW_DIR=$(RAW_DIR)
+	$(MAKE) kv-quant METHOD=turboquant BITS=4 $(if $(MODEL),MODEL=$(MODEL),) RAW_DIR=$(RAW_DIR)
+	$(MAKE) kv-quant METHOD=uniform    BITS=2 $(if $(MODEL),MODEL=$(MODEL),) RAW_DIR=$(RAW_DIR)
+	$(MAKE) kv-quant METHOD=kivi       BITS=2 $(if $(MODEL),MODEL=$(MODEL),) RAW_DIR=$(RAW_DIR)
+	$(MAKE) kv-quant METHOD=turboquant BITS=2 $(if $(MODEL),MODEL=$(MODEL),) RAW_DIR=$(RAW_DIR)
 
 # ── fase 4: avaliação de qualidade ──────────────────────────────────────────
 eval-ppl:        ## Calcula perplexidade  (CONFIG=... RESULT_JSON=... opcionais)
@@ -104,8 +118,17 @@ report:          ## Gera summary.csv + gráficos  (RAW_DIR=... OUTPUT_DIR=... op
 	  --output-dir $(OUTPUT_DIR)
 
 # ── pipelines completos ───────────────────────────────────────────────────────
-all: baseline weight-quant kv-quant annotate-all report  ## Pipeline completo
-	@echo "✓ Pipeline completo finalizado → $(OUTPUT_DIR)/"
+sweep-all: baseline sweep-weight sweep-kv annotate-all report  ## Benchmark completo — todos os modos
+	@echo "✓ Benchmark completo → $(OUTPUT_DIR)/"
+
+benchmark-7b:    ## Benchmark completo para Qwen2.5-7B-Instruct
+	$(MAKE) sweep-all \
+	  MODEL=Qwen/Qwen2.5-7B-Instruct \
+	  RAW_DIR=results/7b \
+	  OUTPUT_DIR=results/7b/report
+
+all: baseline weight-quant kv-quant annotate-all report  ## Pipeline básico (1 config por modo)
+	@echo "✓ Pipeline básico finalizado → $(OUTPUT_DIR)/"
 
 # ── utilidades ────────────────────────────────────────────────────────────────
 clean:           ## Remove artefatos gerados (raw JSONs, CSVs, PNGs)
