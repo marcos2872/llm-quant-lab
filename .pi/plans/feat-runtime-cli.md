@@ -47,7 +47,8 @@ runtime/                        ← raiz do projeto isolado
 ├── pyproject.toml              ← projeto "llm-runtime", depende de "../" (llm-quant-lab)
 ├── uv.lock                     ← gerado por `uv sync` (não versionar .venv)
 ├── Makefile                    ← targets: setup, download, run, run-turboquant, run-full-quant, help
-├── .env.example                ← MODEL_NAME, HF_TOKEN, DEVICE, SYSTEM_PROMPT
+├── .env.example                ← MODEL_NAME, HF_TOKEN, DEVICE, SYSTEM_PROMPT, MODELS_DIR
+├── models/                     ← modelos baixados localmente (não versionado)
 ├── .gitignore                  ← ignora .venv/
 └── llm_runtime/                ← pacote Python (nome sem conflito com src/ do pai)
     ├── __init__.py
@@ -106,6 +107,7 @@ llm-quant-lab = { path = "../", editable = true }
 | `runtime/pyproject.toml` | criar | define projeto isolado + path dep para pai |
 | `runtime/Makefile` | criar | interface de uso — targets make |
 | `runtime/.env.example` | criar | variáveis de ambiente documentadas |
+| `runtime/models/.gitkeep` | criar | garante que a pasta exista no repositório |
 | `runtime/.gitignore` | criar | exclui `.venv/` e `uv.lock` do versionamento |
 | `runtime/llm_runtime/__init__.py` | criar | torna o diretório um pacote |
 | `runtime/llm_runtime/cli.py` | criar | Typer app com 4 comandos |
@@ -143,6 +145,178 @@ llm-quant-lab = { path = "../", editable = true }
 
 ---
 
+## Decomposição do Layout CLI
+
+### Árvore de comandos
+
+```
+llm-runtime
+├── download  <MODEL>                     Baixa modelo do HuggingFace Hub
+│   ├── --token / -t      TEXT            HF token (ou env HF_TOKEN)
+│   └── --cache-dir       PATH  [./models]  Diretório local de modelos (ou env MODELS_DIR)
+│
+├── run       --model MODEL               Chat FP16 sem quantização
+│   ├── --model / -m      TEXT  [req]     Repo ID (ex: Qwen/Qwen2.5-7B-Instruct)
+│   ├── --max-tokens      INT   [512]     Máximo de tokens gerados por resposta
+│   ├── --system-prompt   TEXT  [None]    Prompt de sistema (ou env SYSTEM_PROMPT)
+│   └── --device          TEXT  [cuda]    Dispositivo: cuda | cpu | mps | auto
+│
+├── run-turboquant --model MODEL          Chat com KV cache TurboQuant
+│   ├── --model / -m      TEXT  [req]
+│   ├── --bits            INT   [4]       Bits de quantização do KV (4 | 8)
+│   ├── --max-tokens      INT   [512]
+│   ├── --system-prompt   TEXT  [None]
+│   └── --device          TEXT  [cuda]
+│
+└── run-full-quant --model MODEL          Chat INT4 pesos (NF4) + KV TurboQuant
+    ├── --model / -m      TEXT  [req]
+    ├── --bits            INT   [4]
+    ├── --max-tokens      INT   [512]
+    ├── --system-prompt   TEXT  [None]
+    └── --device          TEXT  [cuda]
+```
+
+---
+
+### Telas do CLI
+
+#### `make help` / `llm-runtime --help`
+
+```
+ Usage: llm-runtime [OPTIONS] COMMAND [ARGS]...
+
+ Runtime LLM interativo com quantização TurboQuant.
+
+╭─ Commands ──────────────────────────────────────────────────────────────────╮
+│ download        Baixa modelo do HuggingFace Hub                             │
+│ run             Chat interativo FP16 sem quantização                        │
+│ run-turboquant  Chat interativo com KV cache TurboQuant                     │
+│ run-full-quant  Chat com pesos INT4 (NF4) + KV TurboQuant                  │
+╰─────────────────────────────────────────────────────────────────────────────╯
+╭─ Options ───────────────────────────────────────────────────────────────────╮
+│ --help    Show this message and exit.                                       │
+╰─────────────────────────────────────────────────────────────────────────────╯
+```
+
+---
+
+#### `make download MODEL=<repo>` em execução
+
+```
+⬇  Baixando Qwen/Qwen2.5-7B-Instruct ...
+
+Fetching 32 files: 100%|████████████████| 32/32 [00:03<00:00]
+Downloading config.json:      100%|████| 662/662 [00:00<00:00, 1.24MB/s]
+Downloading tokenizer.json:   100%|████| 7.03M/7.03M [00:01<00:00, 4.2MB/s]
+Downloading model-00001.safetensors: 100%|███| 4.97G/4.97G [02:14<00:00, 37.0MB/s]
+...
+
+✅ Modelo salvo em: runtime/models/models--Qwen--Qwen2.5-7B-Instruct
+```
+
+---
+
+#### `make run` / `make run-turboquant` / `make run-full-quant` — tela inicial (carregamento)
+
+```
+⚙  Carregando Qwen/Qwen2.5-7B-Instruct [mode: turboquant, bits: 4] ...
+   device: cuda  │  dtype: fp16
+```
+
+> Exibido antes de o `Live` iniciar, enquanto `load_model()` roda.
+
+---
+
+#### Estrutura de `runtime/models/` após download
+
+```
+runtime/models/
+└── Qwen--Qwen2.5-7B-Instruct/          ← repo_id com "/" substituído por "--"
+    ├── config.json
+    ├── tokenizer.json
+    ├── tokenizer_config.json
+    ├── special_tokens_map.json
+    ├── generation_config.json
+    ├── model-00001-of-00004.safetensors
+    ├── model-00002-of-00004.safetensors
+    ├── model-00003-of-00004.safetensors
+    └── model-00004-of-00004.safetensors
+```
+
+> `snapshot_download` respeita a `cache_dir` passada e cria subdiretórios
+> no padrão `models--<owner>--<repo>`. O `load_model()` recebe o path local
+> diretamente — sem precisar do HF Hub online após o primeiro download.
+
+---
+
+#### Painel Rich Live durante o chat (anotado)
+
+```
+┌─ 🚀 LLM Runtime │ Qwen/Qwen2.5-7B-Instruct │ mode: turboquant ──────────────┐
+│                                                                               │
+│ ┌── 📊 Métricas ──────────┐  ┌── 💬 Conversa ──────────────────────────────┐ │
+│ │                         │  │                                              │ │
+│ │ VRAM    14.5 / 24.0 GB  │  │ [você]                                       │ │
+│ │ RAM      4.2 GB         │  │  Qual é a capital da França?                 │ │
+│ │ GPU      87% @ 72 °C    │  │                                              │ │
+│ │ ─────────────────────── │  │ [modelo]                                     │ │
+│ │ Prefill  31,000 tok/s   │  │  A capital da França é Paris. Paris é uma    │ │
+│ │ Decode    21.5 tok/s    │  │  cidade localizada no norte da França, às    │ │
+│ │ 1st tok    0.046 s      │  │  margens do rio Sena...▌                     │ │
+│ │ Geração    3.4 s        │  │                                              │ │
+│ │ Tokens      64          │  │                                              │ │
+│ │ ─────────────────────── │  │                                              │ │
+│ │ KV cache   217 MB       │  │                                              │ │
+│ │ Pesos    5,309 MB       │  │                                              │ │
+│ └─────────────────────────┘  └──────────────────────────────────────────────┘ │
+└───────────────────────────────────────────────────────────────────────────────┘
+```
+
+> **`▌`** — cursor piscante acumulando tokens durante streaming.
+> O painel de **Métricas** (esquerda, ratio=1) é atualizado a cada 200 ms pela thread do
+> `GPUMonitor`. As linhas de throughput/tokens são atualizadas só após cada geração completa.
+> O painel de **Conversa** (direita, ratio=2) cresce linha a linha conforme tokens chegam.
+
+---
+
+#### Prompt de input (Live pausado)
+
+```
+[você] ▶ _
+```
+
+> O Live é interrompido com `Live.stop()` antes de `input()`, evitando artefatos visuais.
+> Após `Enter`, o Live é retomado com `Live.start()` e a resposta começa a fluir.
+
+---
+
+#### Saída de encerramento (`exit` / `Ctrl+C`)
+
+```
+👋 Encerrando sessão.
+   Tokens gerados na sessão : 347
+   Tempo total de geração   : 16.2 s
+   Decode médio             : 21.4 tok/s
+```
+
+---
+
+### Regras de cor (Rich markup)
+
+| Elemento | Estilo Rich |
+|---|---|
+| Cabeçalho (header Rule) | `bold cyan` |
+| Label de métrica | `dim white` |
+| Valor de métrica (normal) | `bold white` |
+| Valor de métrica (alerta ≥ 90% VRAM) | `bold red` |
+| Prefixo `[você]` | `bold green` |
+| Prefixo `[modelo]` | `bold yellow` |
+| Tokens em streaming | `white` |
+| Cursor `▌` | `bold magenta blink` |
+| Mensagem de encerramento | `dim italic` |
+
+---
+
 ## Sequência de Execução
 
 ### 1. Criar `runtime/.gitignore`
@@ -153,6 +327,7 @@ llm-quant-lab = { path = "../", editable = true }
 __pycache__/
 *.pyc
 .env
+models/
 ```
 
 **Dependências:** nenhuma
@@ -219,6 +394,7 @@ MODEL_NAME=Qwen/Qwen2.5-7B-Instruct
 HF_TOKEN=
 DEVICE=cuda
 SYSTEM_PROMPT=
+MODELS_DIR=./models
 ```
 
 **Dependências:** nenhuma
@@ -228,6 +404,15 @@ SYSTEM_PROMPT=
 ### 5. Criar `runtime/llm_runtime/__init__.py`
 
 **O que fazer:** arquivo vazio.
+
+**Dependências:** nenhuma
+
+---
+
+### 5b. Criar `runtime/models/.gitkeep`
+
+**O que fazer:** arquivo vazio — garante que `runtime/models/` exista no repositório
+em branco, sem versionar os pesos.
 
 **Dependências:** nenhuma
 
@@ -324,18 +509,37 @@ o painel e o cursor de input.
 **O que fazer:** `download_model()` com progresso Rich.
 
 ```python
+from pathlib import Path
+
+DEFAULT_MODELS_DIR = Path(__file__).parent.parent / "models"  # runtime/models/
+
 def download_model(
     model_id: str,
     token: str | None = None,
-    cache_dir: str | None = None,
+    cache_dir: Path | str | None = None,
 ) -> str:
-    """Baixa modelo via huggingface_hub.snapshot_download."""
-    # huggingface_hub já está disponível via transformers (dep do pai)
+    """Baixa modelo via huggingface_hub.snapshot_download.
+
+    Salva por padrão em runtime/models/ (ou MODELS_DIR do ambiente).
+    """
+    import os
     from huggingface_hub import snapshot_download
-    path = snapshot_download(repo_id=model_id, token=token, cache_dir=cache_dir)
-    # rich.print path ao final
+
+    resolved = Path(
+        cache_dir
+        or os.environ.get("MODELS_DIR", str(DEFAULT_MODELS_DIR))
+    )
+    resolved.mkdir(parents=True, exist_ok=True)
+
+    path = snapshot_download(repo_id=model_id, token=token, cache_dir=str(resolved))
+    # rich.print confirmação com caminho final
     return path
 ```
+
+**Prioridade de `cache_dir`:**
+1. Flag `--cache-dir` explícita na CLI
+2. Variável de ambiente `MODELS_DIR`
+3. Default: `runtime/models/` (relativo ao pacote)
 
 `snapshot_download` já exibe progresso via tqdm internamente. Não é necessário adaptador
 custom — apenas garantir que `rich` não suprima o output do tqdm.
@@ -407,9 +611,12 @@ app = typer.Typer(name="llm-runtime", add_completion=False,
 def download(
     model: Annotated[str, typer.Argument()],
     token: Annotated[str | None, typer.Option("--token", "-t", envvar="HF_TOKEN")] = None,
-    cache_dir: Annotated[str | None, typer.Option("--cache-dir")] = None,
+    cache_dir: Annotated[str | None, typer.Option(
+        "--cache-dir", envvar="MODELS_DIR",
+        help="Diretório local onde salvar o modelo (default: runtime/models/)"
+    )] = None,
 ) -> None:
-    """Baixa modelo do HuggingFace Hub."""
+    """Baixa modelo do HuggingFace Hub e salva em runtime/models/."""
 
 @app.command()
 def run(model, max_tokens, system_prompt, device) -> None:
@@ -491,11 +698,14 @@ def _chat_loop(model_name, mode, bits, max_tokens, system_prompt, device):
 
 ```bash
 cd runtime/
-cp .env.example .env          # editar MODEL_NAME e HF_TOKEN se necessário
+cp .env.example .env          # editar MODEL_NAME, HF_TOKEN, MODELS_DIR se necessário
 make setup                    # uv sync → cria .venv/ local
 
-make download MODEL=Qwen/Qwen2.5-7B-Instruct   # baixa modelo
-make run-full-quant MODEL=Qwen/Qwen2.5-7B-Instruct BITS=4   # inicia chat
+make download MODEL=Qwen/Qwen2.5-7B-Instruct
+# → salvo em runtime/models/models--Qwen--Qwen2.5-7B-Instruct/
+
+make run-full-quant MODEL=Qwen/Qwen2.5-7B-Instruct BITS=4
+# → carrega direto de runtime/models/ (sem acesso à internet)
 ```
 
 ---
@@ -504,7 +714,7 @@ make run-full-quant MODEL=Qwen/Qwen2.5-7B-Instruct BITS=4   # inicia chat
 
 - [ ] `cd runtime && make help` lista todos os targets com descrição
 - [ ] `cd runtime && make setup` executa `uv sync` e cria `runtime/.venv/` isolado
-- [ ] `cd runtime && make download MODEL=Qwen/Qwen2.5-0.5B-Instruct` baixa com progresso
+- [ ] `cd runtime && make download MODEL=Qwen/Qwen2.5-0.5B-Instruct` baixa com progresso em `runtime/models/`
 - [ ] `cd runtime && make run MODEL=...` abre chat FP16 com painel de métricas
 - [ ] `cd runtime && make run-turboquant MODEL=... BITS=4` abre chat; KV MB < 250
 - [ ] `cd runtime && make run-full-quant MODEL=...` abre chat; pesos ~5.3 GB + KV TurboQuant
