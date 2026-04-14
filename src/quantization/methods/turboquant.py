@@ -115,6 +115,34 @@ def _get_theoretical_codebook(
     return centroids.to(device)
 
 
+# ── bit packing (compressão real de storage) ────────────────────────────────
+
+def _pack_indices(indices: torch.Tensor, bits: int) -> torch.Tensor:
+    """Empacota índices int8 em uint8: bits=2 → 4/byte; bits=4 → 2/byte; outros → sem pack."""
+    if bits not in (2, 4):
+        return indices
+    ipb = 8 // bits
+    n, d = indices.shape
+    pad = (-d) % ipb
+    u = torch.nn.functional.pad(indices.int(), (0, pad)).to(torch.uint8)
+    packed = torch.zeros(n, (d + pad) // ipb, dtype=torch.uint8, device=indices.device)
+    for i in range(ipb):
+        packed |= u[:, i::ipb] << ((ipb - 1 - i) * bits)
+    return packed
+
+
+def _unpack_indices(packed: torch.Tensor, bits: int, n_cols: int) -> torch.Tensor:
+    """Inverte _pack_indices. n_cols: dimensão original antes do padding."""
+    if bits not in (2, 4):
+        return packed
+    ipb, mask = 8 // bits, (1 << bits) - 1
+    n = packed.shape[0]
+    out = torch.zeros(n, packed.shape[1] * ipb, dtype=torch.int8, device=packed.device)
+    for i in range(ipb):
+        out[:, i::ipb] = ((packed >> ((ipb - 1 - i) * bits)) & mask).to(torch.int8)
+    return out[:, :n_cols]
+
+
 # ── quantização escalar por coordenada (D4) ──────────────────────────────────
 
 def _scalar_quantize(
@@ -130,7 +158,8 @@ def _scalar_quantize(
     retorna:  (n_tokens, dim) int8 se n_levels <= 128, senão int16
     """
     dists = (values.unsqueeze(-1) - codebook).abs()
-    dtype = torch.int8 if len(codebook) <= 128 else torch.int16
+    dtype = (torch.int8  if len(codebook) <= 128 else
+             torch.uint8 if len(codebook) <= 256 else torch.int16)
     return dists.argmin(dim=-1).to(dtype)
 
 
@@ -217,8 +246,8 @@ def quantize_turboquant(
     # 4. Dois codebooks independentes + quantização escalar (Seção 4.3)
     cb_normal  = _get_theoretical_codebook(bits, head_dim, device)
     cb_outlier = _get_theoretical_codebook(eff_outlier_bits, head_dim, device)
-    q_normal  = _scalar_quantize(normal_vals,  cb_normal)
-    q_outlier = _scalar_quantize(outlier_vals, cb_outlier)
+    q_normal  = _pack_indices(_scalar_quantize(normal_vals,  cb_normal),  bits)
+    q_outlier = _pack_indices(_scalar_quantize(outlier_vals, cb_outlier), eff_outlier_bits)
 
     meta = _build_meta(
         q_outlier, cb_normal, cb_outlier, outlier_idx, normal_idx, norms,
@@ -242,9 +271,14 @@ def dequantize_turboquant(quantized: torch.Tensor, meta: dict) -> torch.Tensor:
     head_dim = meta["head_dim"]
     n_tokens = meta["n_tokens"]
 
-    # 1. Reconstrói as duas partições
-    normal_recon  = _scalar_dequantize(quantized,          meta["cb_normal"].to(device))
-    outlier_recon = _scalar_dequantize(meta["q_outlier"].to(device), meta["cb_outlier"].to(device))
+    # 1. Desempacota índices e reconstrói as duas partições
+    bits_n = len(meta["cb_normal"]).bit_length() - 1
+    bits_o = len(meta["cb_outlier"]).bit_length() - 1
+    n_n, n_o = len(meta["normal_idx"]), len(meta["outlier_idx"])
+    normal_recon  = _scalar_dequantize(
+        _unpack_indices(quantized,                    bits_n, n_n), meta["cb_normal"].to(device))
+    outlier_recon = _scalar_dequantize(
+        _unpack_indices(meta["q_outlier"].to(device), bits_o, n_o), meta["cb_outlier"].to(device))
 
     # 2. Monta tensor rotacionado completo
     full_rotated = torch.zeros(n_tokens, head_dim, device=device, dtype=torch.float32)
