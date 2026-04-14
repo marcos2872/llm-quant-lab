@@ -103,7 +103,11 @@ def measure_prompt(
     m.memory.weights_mb = weights_mb
     m.memory.peak_mb = peak_mb
     m.memory.kv_mb = kv_mb
-    return m.to_dict()
+    result = m.to_dict()
+    result["kv_theoretical_mb"] = round(
+        compute_kv_mb(model, throughput.input_tokens + throughput.output_tokens), 2
+    )
+    return result
 
 
 def save_run_json(payload: dict, output_dir: Path, filename: str) -> Path:

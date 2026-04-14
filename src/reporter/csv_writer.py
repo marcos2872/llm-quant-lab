@@ -16,7 +16,7 @@ console = Console()
 
 _COLUMNS = [
     "model", "quant_mode", "bits", "run_type", "method",
-    "peak_mem_mb", "kv_mem_mb", "weights_mb",
+    "peak_mem_mb", "kv_mem_mb", "kv_theoretical_mb", "weights_mb",
     "prefill_tok_s", "decode_tok_s", "first_token_latency_s", "total_time_s",
     "input_tokens", "output_tokens",
     "perplexity", "needle_recall", "task_f1",
@@ -41,6 +41,9 @@ def _extract_row(payload: dict, source: str) -> dict | None:
         "method": payload.get("method", "none"),
         "peak_mem_mb": round(avg("peak_mb"), 2),
         "kv_mem_mb": round(avg("kv_mb"), 2),
+        "kv_theoretical_mb": round(avg("kv_theoretical_mb"), 2) if any(
+            "kv_theoretical_mb" in r for r in results
+        ) else None,
         "weights_mb": round(avg("weights_mb"), 2),
         "prefill_tok_s": round(avg("prefill_tok_s"), 2),
         "decode_tok_s": round(avg("decode_tok_s"), 2),

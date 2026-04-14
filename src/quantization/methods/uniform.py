@@ -1,10 +1,11 @@
 """
 src/quantization/methods/uniform.py
 -------------------------------------
-Quantização uniforme (min-max) por tensor de KV cache.
+Quantização uniforme (min-max) por cabeça de atenção (per-head) de KV cache.
 
 Método:
-  - Encontra min e max do tensor
+  - Separa outlier_channels de maior magnitude e os preserva em FP16
+  - Para os canais normais, calcula min/max por head (batch×head)
   - Escala para [0, 2^bits - 1] como inteiro
   - Dequantiza revertendo a escala
 
@@ -43,32 +44,73 @@ def _unpack_indices_flat(packed: torch.Tensor, bits: int, n_elements: int) -> to
     return out[:n_elements]
 
 
+def _detect_outlier_channels(
+    tensor: torch.Tensor, n_outliers: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Detecta os n_outliers canais de maior magnitude média.
+
+    Retorna (outlier_idx, normal_idx) — índices sobre a dimensão head_dim.
+    """
+    head_dim = tensor.shape[-1]
+    n_out = min(n_outliers, head_dim)
+    scores = tensor.reshape(-1, head_dim).abs().mean(dim=0)
+    _, out_idx = scores.topk(n_out)
+    out_idx, _ = out_idx.sort()
+    mask = torch.ones(head_dim, dtype=torch.bool, device=tensor.device)
+    mask[out_idx] = False
+    norm_idx = mask.nonzero(as_tuple=True)[0]
+    return out_idx, norm_idx
+
+
 def quantize_uniform(
     tensor: torch.Tensor,
     bits: int = 4,
+    outlier_channels: int = 0,
     layer_idx: int = 0,  # ignorado; mantém interface compatível com turboquant
 ) -> tuple[torch.Tensor, dict]:
     """
-    Quantiza tensor com escala uniforme global min-max.
+    Quantiza tensor com escala uniforme min-max por head de atenção.
 
-    Retorna (tensor_quantizado, metadata) onde metadata contém
-    scale e zero_point para reconstrução.
+    Quando outlier_channels > 0, separa os canais de maior magnitude em FP16
+    e quantiza os demais — evita que outliers contaminem a escala dos canais
+    normais (causa do colapso em contextos longos).
+
+    Retorna (tensor_quantizado, metadata) onde metadata contém tudo o
+    necessário para reconstrução, incluindo os canais outlier em FP16.
     """
+    assert tensor.ndim == 4, f"Esperado ndim=4, recebido shape={tensor.shape}"
+    b, h, s, d = tensor.shape
     n_levels = 2 ** bits
-    t_min = tensor.min().item()
-    t_max = tensor.max().item()
-    scale = (t_max - t_min) / (n_levels - 1) if t_max != t_min else 1.0
 
-    quantized = ((tensor.float() - t_min) / scale).round().clamp(0, n_levels - 1)
-    # int8 suporta apenas -128..127; para 8 bits os índices chegam a 255 → overflow
+    outlier_idx: torch.Tensor | None = None
+    normal_idx: torch.Tensor | None = None
+    outlier_fp16: torch.Tensor | None = None
+
+    if outlier_channels > 0:
+        outlier_idx, normal_idx = _detect_outlier_channels(tensor, outlier_channels)
+        outlier_fp16 = tensor[:, :, :, outlier_idx].half()
+        work = tensor[:, :, :, normal_idx]
+    else:
+        work = tensor
+
+    # min/max por head: (b, h) → broadcast (b, h, 1, 1)
+    t_min = work.flatten(-2).min(-1).values.view(b, h, 1, 1)
+    t_max = work.flatten(-2).max(-1).values.view(b, h, 1, 1)
+    scale = ((t_max - t_min) / (n_levels - 1)).clamp(min=1e-8)
+
+    quantized = ((work.float() - t_min) / scale).round().clamp(0, n_levels - 1)
     dtype = torch.int8 if bits < 8 else torch.int16
     quantized = quantized.to(dtype)
     n_elements = quantized.numel()
     packed = _pack_indices_flat(quantized, bits) if bits in (2, 4) else quantized
 
-    meta = {
-        "scale": scale, "zero_point": t_min, "shape": tensor.shape,
-        "dtype": str(tensor.dtype), "bits": bits, "n_elements": n_elements,
+    meta: dict = {
+        "scale": scale, "zero_point": t_min, "shape": work.shape,
+        "original_shape": tensor.shape, "dtype": str(tensor.dtype),
+        "bits": bits, "n_elements": n_elements,
+        "outlier_idx": outlier_idx, "normal_idx": normal_idx,
+        "outlier_fp16": outlier_fp16,
     }
     return packed, meta
 
@@ -83,4 +125,19 @@ def dequantize_uniform(
     if bits in (2, 4) and n_elements is not None:
         quantized = _unpack_indices_flat(quantized, bits, n_elements)
     dtype = getattr(torch, meta["dtype"].replace("torch.", ""))
-    return (quantized.reshape(meta["shape"]).float() * meta["scale"] + meta["zero_point"]).to(dtype)
+
+    work = (quantized.reshape(meta["shape"]).float() * meta["scale"] + meta["zero_point"]).to(dtype)
+
+    outlier_idx = meta.get("outlier_idx")
+    if outlier_idx is None:
+        return work
+
+    # reconstrói tensor completo mesclando normais quantizados + outliers FP16
+    orig_shape = meta["original_shape"]
+    result = torch.empty(orig_shape, dtype=dtype, device=quantized.device)
+    normal_idx = meta["normal_idx"]
+    result[:, :, :, normal_idx.to(quantized.device)] = work
+    result[:, :, :, outlier_idx.to(quantized.device)] = (
+        meta["outlier_fp16"].to(dtype).to(quantized.device)
+    )
+    return result

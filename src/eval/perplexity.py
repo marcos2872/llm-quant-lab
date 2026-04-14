@@ -89,8 +89,8 @@ def eval_perplexity(
 
     handles: list = []
     if quantize_fn is not None and dequantize_fn is not None:
-        from src.quantization.kv_hooks import install_kv_hooks
-        handles, _ = install_kv_hooks(model, quantize_fn, dequantize_fn)
+        from src.quantization.kv_hooks import install_kv_proj_hooks
+        handles, _ = install_kv_proj_hooks(model, quantize_fn, dequantize_fn)
 
     total_nll, total_tokens = 0.0, 0
     try:

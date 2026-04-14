@@ -32,11 +32,20 @@ def _get_quant_fns(
     """Retorna (quantize_fn, dequantize_fn) para o método configurado."""
     if method == "uniform":
         from src.quantization.methods.uniform import dequantize_uniform, quantize_uniform
-        return partial(quantize_uniform, bits=bits), dequantize_uniform
+        return (
+            partial(quantize_uniform, bits=bits,
+                    outlier_channels=kv_cfg.get("outlier_channels", 0)),
+            dequantize_uniform,
+        )
 
     if method == "kivi":
         from src.quantization.methods.kivi import dequantize_kivi, quantize_kivi
-        return partial(quantize_kivi, bits=bits, group_size=kv_cfg.get("group_size", 64)), dequantize_kivi
+        return (
+            partial(quantize_kivi, bits=bits,
+                    group_size=kv_cfg.get("group_size", 64),
+                    outlier_channels=kv_cfg.get("outlier_channels", 0)),
+            dequantize_kivi,
+        )
 
     if method == "turboquant":
         from src.quantization.methods.turboquant import dequantize_turboquant, quantize_turboquant

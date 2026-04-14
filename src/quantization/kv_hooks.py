@@ -133,6 +133,83 @@ def _make_kv_hook(
     return hook
 
 
+def install_kv_proj_hooks(
+    model: torch.nn.Module,
+    quantize_fn: Callable[[torch.Tensor], tuple[Any, Any]],
+    dequantize_fn: Callable[[Any, Any], torch.Tensor],
+) -> tuple[list[Any], list[float]]:
+    """
+    Instala hooks após k_proj e v_proj de cada camada de atenção.
+
+    Compatível com arquiteturas onde o cache é atualizado internamente
+    (ex: Qwen2.5) e o módulo de atenção não retorna past_key_values
+    no output tuple. Semanticamente equivalente a quantizar o KV cache:
+    quantiza e dequantiza o output das projeções antes do cálculo de atenção.
+
+    Retorna (handles, kv_mem_tracker). Passar handles para remove_kv_hooks.
+    """
+    attn_layers = _find_attention_layers(model)
+    if not attn_layers:
+        logger.warning("Nenhum attention layer encontrado — hooks não instalados")
+        return [], []
+
+    kv_mem_tracker: list[float] = []
+    handles: list[Any] = []
+
+    for attn in attn_layers:
+        # detecta n_kv_heads e head_dim do módulo de atenção para reshape correto
+        n_kv_heads = (
+            getattr(attn, "num_key_value_heads", None)
+            or getattr(attn, "num_kv_heads", None)
+            or getattr(attn, "num_heads", 1)
+        )
+        head_dim = getattr(attn, "head_dim", None)
+
+        for proj_name in ("k_proj", "v_proj"):
+            proj = getattr(attn, proj_name, None)
+            if proj is None:
+                continue
+
+            def _make_proj_hook(
+                qfn: Callable, dqfn: Callable,
+                tracker: list[float],
+                n_heads: int, hdim: int | None,
+            ) -> Callable:
+                def hook(
+                    module: torch.nn.Module,
+                    inputs: tuple,  # noqa: ARG001
+                    output: torch.Tensor,
+                ) -> torch.Tensor:
+                    """Reshape 3-D proj output → 4-D, quantiza, restaura."""
+                    orig_shape = output.shape
+                    if output.ndim == 3:
+                        b, s, total = orig_shape
+                        h = n_heads
+                        d = hdim if hdim is not None else total // h
+                        t4d = output.view(b, s, h, d).permute(0, 2, 1, 3)
+                    else:
+                        t4d = output
+                    q, meta = qfn(t4d, layer_idx=0)
+                    tracker.append(_tensor_mb(q))
+                    recon = dqfn(q, meta)
+                    if output.ndim == 3:
+                        b, s, total = orig_shape
+                        return recon.permute(0, 2, 1, 3).reshape(orig_shape)
+                    return recon
+                return hook
+
+            h = proj.register_forward_hook(
+                _make_proj_hook(
+                    quantize_fn, dequantize_fn, kv_mem_tracker,
+                    n_kv_heads, head_dim,
+                )
+            )
+            handles.append(h)
+
+    logger.info("KV proj hooks instalados em %d projeções", len(handles))
+    return handles, kv_mem_tracker
+
+
 def install_kv_hooks(
     model: torch.nn.Module,
     quantize_fn: Callable[[torch.Tensor], tuple[Any, Any]],
