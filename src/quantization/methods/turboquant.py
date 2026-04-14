@@ -198,7 +198,8 @@ def quantize_turboquant(
     outlier_bits=0 → bits+1 automático. Retorna (q_normal, meta)."""
     original_shape, original_dtype = tensor.shape, tensor.dtype
     device, head_dim = tensor.device, tensor.shape[-1]
-    eff_outlier_bits = outlier_bits if outlier_bits > 0 else bits + 1
+    # bits*2 garante SNR dos canais outlier próximo ao FP16 (ver diagnóstico)
+    eff_outlier_bits = outlier_bits if outlier_bits > 0 else bits * 2
 
     # 1. Normalização para esfera unitária S^{d-1} (Lema 1)
     flat = tensor.float().reshape(-1, head_dim)

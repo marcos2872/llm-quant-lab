@@ -16,6 +16,6 @@ kv_quantization:
   enabled: false          # habilitado dinamicamente pelo CLI (--method)
   method: turboquant
   bits: 2
-  outlier_bits: 3         # 32 ch × 3 bits + 96 ch × 2 bits = 2.5-bit efetivo
+  outlier_bits: 4         # 0 → bits*2; explicitado para evitar dependência de default
   outlier_channels: 32
   rotation_seed: 42

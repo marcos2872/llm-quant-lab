@@ -11,6 +11,6 @@ kv_quantization:
   enabled: true
   method: turboquant    # uniform | kivi | turboquant
   bits: 2               # bits para canais normais (paper: 2 → 2.5-bit efetivo)
-  outlier_bits: 3       # bits para canais outlier (paper: 3 → 2.5-bit efetivo)
+  outlier_bits: 4       # bits para canais outlier; 0 → bits*2 automático
   outlier_channels: 32  # canais de alta precisão (paper: 32/128 = 25%)
   rotation_seed: 42     # semente para rotação ortogonal Π
