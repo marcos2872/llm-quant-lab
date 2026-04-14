@@ -125,7 +125,8 @@ def run_kv_quant(
         payload={
             "run_type": "kv_quant", "model": model_name,
             "quant_mode": f"kv_{method}_{bits}bit", "bits": bits,
-            "method": method, "config": config, "results": results,
+            "method": method, "prompts_file": str(prompts_file),
+            "config": config, "results": results,
         },
         output_dir=output_dir,
         filename=f"kv_quant_{method}_{bits}bit_{int(time.time())}.json",

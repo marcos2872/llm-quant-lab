@@ -28,6 +28,7 @@ def _run_single_bits(
     base_config: dict,
     prompts: list[dict],
     output_dir: Path,
+    prompts_file: Path = Path("benchmarks/prompts/basic.jsonl"),
 ) -> Path:
     """Executa weight quant para um valor de bits e salva JSON."""
     config = copy.deepcopy(base_config)
@@ -52,6 +53,7 @@ def _run_single_bits(
             "quant_mode": f"weight_{bits}bit" if bnb_active else f"weight_{bits}bit_fallback_fp32",
             "bits": bits if bnb_active else 32,
             "bnb_active": bnb_active,
+            "prompts_file": str(prompts_file),
             "config": config,
             "results": results,
         },
@@ -87,4 +89,4 @@ def run_weight_quant(
 
     prompts = load_prompts(prompts_file)
     bits_to_run = bits_list or [wq.get("bits", 4)]
-    return [_run_single_bits(b, base_config, prompts, output_dir) for b in bits_to_run]
+    return [_run_single_bits(b, base_config, prompts, output_dir, prompts_file) for b in bits_to_run]

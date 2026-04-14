@@ -46,6 +46,7 @@ def run_baseline(
             "model": config["model"],
             "quant_mode": "baseline",
             "bits": 16,
+            "prompts_file": str(prompts_file),
             "config": config,
             "results": results,
         },

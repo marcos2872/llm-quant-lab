@@ -99,6 +99,22 @@ def _load_eval_config(config: Path, result_json: Path | None) -> dict:
     return _load_config(config)
 
 
+def _load_eval_prompts(result_json: Path | None, cli_prompts: Path) -> Path:
+    """
+    Retorna o arquivo de prompts para eval-tasks.
+
+    Prioridade: (1) prompts_file embutido no JSON de run — garante que o
+    eval use os mesmos prompts do runner (ex: long_context.jsonl no modo long);
+    (2) --prompts do CLI como fallback.
+    """
+    if result_json and result_json.exists():
+        import json as _json
+        payload = _json.loads(result_json.read_text())
+        if "prompts_file" in payload:
+            return Path(payload["prompts_file"])
+    return cli_prompts
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # FASE 1 — Baseline
 # ══════════════════════════════════════════════════════════════════════════════
@@ -267,7 +283,8 @@ def eval_tasks(
     from src.eval.task_score import eval_task_score
     quantize_fn, dequantize_fn = _build_kv_helpers(cfg)
     cache_factory = _build_cache_factory(quantize_fn, dequantize_fn)
-    result = eval_task_score(llm, tokenizer, prompts_file=prompts, device=device, cache_factory=cache_factory)
+    effective_prompts = _load_eval_prompts(result_json, prompts)
+    result = eval_task_score(llm, tokenizer, prompts_file=effective_prompts, device=device, cache_factory=cache_factory)
 
     if result_json and result_json.exists():
         import json
