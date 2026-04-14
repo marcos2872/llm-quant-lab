@@ -44,10 +44,9 @@ def _get_quant_fns(
             partial(
                 quantize_turboquant,
                 bits=bits,
-                group_size=kv_cfg.get("group_size", 64),
+                outlier_bits=kv_cfg.get("outlier_bits", 0),  # 0 → bits+1
                 outlier_channels=kv_cfg.get("outlier_channels", 32),
                 rotation_seed=kv_cfg.get("rotation_seed", 42),
-                model_id=model_name,
             ),
             dequantize_turboquant,
         )

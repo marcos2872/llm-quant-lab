@@ -7,3 +7,15 @@ dtype: fp16
 max_new_tokens: 64       # resposta curta — o interesse é no contexto de entrada
 model: Qwen/Qwen2.5-7B-Instruct
 trust_remote_code: false
+
+# Configuração padrão de KV quant para contexto longo
+# Usada como base quando sweep-kv sobrescreve method/bits via CLI.
+# outlier_bits=0 → automático (bits+1); explicitado aqui para o caso turboquant
+# conforme Seção 4.3 do paper (arXiv:2504.19874).
+kv_quantization:
+  enabled: false          # habilitado dinamicamente pelo CLI (--method)
+  method: turboquant
+  bits: 2
+  outlier_bits: 3         # 32 ch × 3 bits + 96 ch × 2 bits = 2.5-bit efetivo
+  outlier_channels: 32
+  rotation_seed: 42
