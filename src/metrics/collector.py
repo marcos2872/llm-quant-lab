@@ -110,21 +110,30 @@ def _run_decode(
     inputs: dict,
     max_new_tokens: int,
     generate_kwargs: dict | None = None,
-) -> tuple[Any, float]:
-    """Executa decode e retorna (output_ids, elapsed_s)."""
+) -> tuple[Any, float, float]:
+    """
+    Executa decode e retorna (output_ids, elapsed_s, kv_delta_mb).
+
+    kv_delta_mb: memória alocada durante o decode (aproxima o KV cache
+    para runs sem kv_mem_tracker, como weight_quant).
+    """
     reset_peak()
+    mem_before = current_memory_mb()
     extra = generate_kwargs or {}
     t0 = time.perf_counter()
     with torch.no_grad():
         output_ids = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
+            min_new_tokens=1,
             do_sample=False,
             temperature=None,
             top_p=None,
             **extra,
         )
-    return output_ids, time.perf_counter() - t0
+    elapsed = time.perf_counter() - t0
+    kv_delta = max(0.0, peak_memory_mb() - mem_before)
+    return output_ids, elapsed, kv_delta
 
 
 # ── API pública de throughput ──────────────────────────────────────────────────
@@ -136,19 +145,21 @@ def measure_throughput(
     max_new_tokens: int = 256,
     device: str = "cpu",
     generate_kwargs: dict | None = None,
-) -> tuple[Throughput, str]:
+) -> tuple[Throughput, str, float]:
     """
     Mede throughput de prefill e decode separadamente.
 
     generate_kwargs: kwargs extras para model.generate() — usado para injetar
     QuantizedDynamicCache e medir redução real de memória KV.
-    Retorna (Throughput, texto_gerado).
+    Retorna (Throughput, texto_gerado, kv_delta_mb).
+    kv_delta_mb: memória alocada durante o decode; usado como fallback
+    para estimar KV cache quando não há kv_mem_tracker (ex: weight_quant).
     """
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
     input_len = inputs["input_ids"].shape[-1]
 
     prefill_tok_s, prefill_time = _run_prefill(model, inputs)
-    output_ids, gen_time = _run_decode(model, inputs, max_new_tokens, generate_kwargs)
+    output_ids, gen_time, kv_delta = _run_decode(model, inputs, max_new_tokens, generate_kwargs)
 
     output_len = output_ids.shape[-1] - input_len
     decode_tok_s = output_len / gen_time if gen_time > 0 else 0.0
@@ -162,4 +173,4 @@ def measure_throughput(
         input_tokens=input_len,
         output_tokens=output_len,
     )
-    return tp, generated
+    return tp, generated, kv_delta

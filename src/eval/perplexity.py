@@ -66,10 +66,14 @@ def eval_perplexity(
     max_length: int | None = None,
     max_samples: int = 50,
     device: str = "cpu",
+    quantize_fn: Any = None,
+    dequantize_fn: Any = None,
 ) -> dict:
     """
     Calcula perplexidade com sliding window em corpus_path.
 
+    quantize_fn / dequantize_fn: quando fornecidos, instala KV hooks antes
+    de cada avaliação para simular o impacto da quantização de KV cache.
     Retorna dict com 'perplexity', 'avg_nll', 'n_samples'.
     """
     lines = [
@@ -83,11 +87,21 @@ def eval_perplexity(
         2048,
     )
 
+    handles: list = []
+    if quantize_fn is not None and dequantize_fn is not None:
+        from src.quantization.kv_hooks import install_kv_hooks
+        handles, _ = install_kv_hooks(model, quantize_fn, dequantize_fn)
+
     total_nll, total_tokens = 0.0, 0
-    for text in track(lines, description="Calculando perplexidade..."):
-        nll, tokens = _process_text(text, model, tokenizer, ctx_len, stride, device)
-        total_nll += nll
-        total_tokens += tokens
+    try:
+        for text in track(lines, description="Calculando perplexidade..."):
+            nll, tokens = _process_text(text, model, tokenizer, ctx_len, stride, device)
+            total_nll += nll
+            total_tokens += tokens
+    finally:
+        if handles:
+            from src.quantization.kv_hooks import remove_kv_hooks
+            remove_kv_hooks(handles)
 
     if total_tokens == 0:
         return {"perplexity": float("inf"), "avg_nll": float("inf"), "n_samples": 0}

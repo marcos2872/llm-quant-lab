@@ -11,6 +11,33 @@ from __future__ import annotations
 import torch
 
 
+def _pack_indices_flat(indices: torch.Tensor, bits: int) -> torch.Tensor:
+    """Empacota índices 1D em uint8: bits=2 → 4/byte, bits=4 → 2/byte."""
+    if bits not in (2, 4):
+        return indices
+    ipb = 8 // bits
+    flat = indices.int().reshape(-1)
+    pad = (-flat.numel()) % ipb
+    if pad:
+        flat = torch.nn.functional.pad(flat, (0, pad))
+    flat_u = flat.to(torch.uint8)
+    packed = torch.zeros(flat_u.numel() // ipb, dtype=torch.uint8, device=indices.device)
+    for i in range(ipb):
+        packed |= flat_u[i::ipb] << ((ipb - 1 - i) * bits)
+    return packed
+
+
+def _unpack_indices_flat(packed: torch.Tensor, bits: int, n_elements: int) -> torch.Tensor:
+    """Inverte _pack_indices_flat. n_elements: tamanho original antes do padding."""
+    if bits not in (2, 4):
+        return packed
+    ipb, mask = 8 // bits, (1 << bits) - 1
+    out = torch.zeros(packed.numel() * ipb, dtype=torch.int8, device=packed.device)
+    for i in range(ipb):
+        out[i::ipb] = ((packed >> ((ipb - 1 - i) * bits)) & mask).to(torch.int8)
+    return out[:n_elements]
+
+
 def _pad_and_group(
     flat: torch.Tensor, group_size: int
 ) -> tuple[torch.Tensor, int, int, int]:
@@ -59,14 +86,22 @@ def quantize_kivi(
         "n_groups": n_groups,
         "group_size": group_size,
         "pad": pad,
+        "bits": bits,
+        "n_elements": q.numel(),
     }
-    return q.to(dtype), meta
+    packed = _pack_indices_flat(q.to(dtype), bits) if bits in (2, 4) else q.to(dtype)
+    return packed, meta
 
 
 def dequantize_kivi(quantized: torch.Tensor, meta: dict) -> torch.Tensor:
     """Reconstrói tensor float a partir de tensor quantizado por grupo."""
     dtype = getattr(torch, meta["original_dtype"].replace("torch.", ""))
-    reconstructed = quantized.float() * meta["scale"] + meta["zero"]
+    bits = meta.get("bits", 8)
+    n_elements = meta.get("n_elements")
+    if bits in (2, 4) and n_elements is not None:
+        quantized = _unpack_indices_flat(quantized, bits, n_elements)
+    grouped = quantized.reshape(meta["n_rows"], meta["n_groups"], meta["group_size"])
+    reconstructed = grouped.float() * meta["scale"] + meta["zero"]
     reconstructed = reconstructed.reshape(meta["n_rows"], -1)
     if meta["pad"] > 0:
         reconstructed = reconstructed[:, : -meta["pad"]]

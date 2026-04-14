@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +46,7 @@ def _run_single_entry(
     tokenizer: Any,
     max_new_tokens: int,
     device: str,
+    cache_factory: Callable | None = None,
 ) -> dict:
     """Executa uma única entrada needle e retorna resultado."""
     context = _build_context(entry["needle"], entry["context_tokens"], tokenizer)
@@ -53,6 +55,10 @@ def _run_single_entry(
     inputs = tokenizer(prompt, return_tensors="pt", truncation=True).to(device)
     actual_tokens = inputs["input_ids"].shape[-1]
 
+    extra: dict = {}
+    if cache_factory is not None:
+        extra["past_key_values"] = cache_factory()
+
     with torch.no_grad():
         out_ids = model.generate(
             **inputs,
@@ -60,6 +66,7 @@ def _run_single_entry(
             do_sample=False,
             temperature=None,
             top_p=None,
+            **extra,
         )
     generated = tokenizer.decode(out_ids[0][actual_tokens:], skip_special_tokens=True)
     hit = entry["answer"].lower().strip() in generated.lower()
@@ -80,10 +87,13 @@ def eval_needle(
     needle_file: Path = Path("benchmarks/long_context/needle.jsonl"),
     max_new_tokens: int = 128,
     device: str = "cpu",
+    cache_factory: Callable | None = None,
 ) -> dict:
     """
     Roda Needle-in-a-Haystack em todas as entradas do arquivo.
 
+    cache_factory: quando fornecido, cria QuantizedDynamicCache fresco
+    por prompt para avaliar com KV cache quantizado ativo.
     Retorna dict com 'overall_recall', 'by_context_len', 'details'.
     """
     entries = [json.loads(line) for line in needle_file.read_text().splitlines() if line.strip()]
@@ -91,7 +101,7 @@ def eval_needle(
     by_context: dict[int, list[bool]] = defaultdict(list)
 
     for entry in track(entries, description="Needle test..."):
-        result = _run_single_entry(entry, model, tokenizer, max_new_tokens, device)
+        result = _run_single_entry(entry, model, tokenizer, max_new_tokens, device, cache_factory)
         details.append(result)
         by_context[entry["context_tokens"]].append(result["hit"])
 

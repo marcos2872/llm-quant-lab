@@ -49,12 +49,15 @@ def measure_prompt(
     """
     Executa um único prompt e retorna dict de métricas.
 
-    kv_mem_tracker: acumula MB de KV quantizado; limpo após cada prompt.
+    kv_mem_tracker: acumula MB de KV quantizado (QuantizedDynamicCache); limpo
+    após cada prompt. Quando ausente, usa kv_delta do decode como fallback
+    (mais preciso que peak-weights para weight_quant, pois exclui buffers
+    de ativacão do prefill).
     generate_kwargs: repassado para measure_throughput (ex: past_key_values).
     """
     reset_peak()
     weights_mb = current_memory_mb()
-    throughput, generated = measure_throughput(
+    throughput, generated, kv_delta = measure_throughput(
         model=model,
         tokenizer=tokenizer,
         prompt=entry["prompt"],
@@ -65,10 +68,10 @@ def measure_prompt(
     peak_mb = peak_memory_mb()
 
     if kv_mem_tracker is not None:
-        kv_mb = sum(kv_mem_tracker) if kv_mem_tracker else max(0.0, peak_mb - weights_mb)
+        kv_mb = sum(kv_mem_tracker) if kv_mem_tracker else kv_delta
         kv_mem_tracker.clear()
     else:
-        kv_mb = max(0.0, peak_mb - weights_mb)
+        kv_mb = kv_delta
 
     m = RunMetrics(throughput=throughput, prompt_id=entry.get("id", ""))
     m.generated_text = generated

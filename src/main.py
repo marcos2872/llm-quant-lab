@@ -57,6 +57,32 @@ def _patch_model(config: dict, model: str | None) -> dict:
     return config
 
 
+def _build_kv_helpers(cfg: dict) -> tuple:
+    """Retorna (quantize_fn, dequantize_fn) se kv_quantization.enabled, senão (None, None)."""
+    kv_cfg = cfg.get("kv_quantization", {})
+    if not kv_cfg.get("enabled", False):
+        return None, None
+    from src.runner.kv_quant import _get_quant_fns
+    return _get_quant_fns(
+        kv_cfg.get("method", "uniform"),
+        kv_cfg.get("bits", 4),
+        kv_cfg,
+        cfg.get("model", ""),
+    )
+
+
+def _build_cache_factory(quantize_fn: object, dequantize_fn: object) -> object:
+    """Cria factory que retorna QuantizedDynamicCache fresco a cada chamada."""
+    if quantize_fn is None:
+        return None
+    from src.quantization.kv_cache import QuantizedDynamicCache
+
+    def _factory() -> QuantizedDynamicCache:
+        return QuantizedDynamicCache(quantize_fn, dequantize_fn, [])
+
+    return _factory
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # FASE 1 — Baseline
 # ══════════════════════════════════════════════════════════════════════════════
@@ -155,7 +181,15 @@ def eval_ppl(
     device = resolve_device(llm)
 
     from src.eval.perplexity import eval_perplexity
-    result = eval_perplexity(llm, tokenizer, corpus_path=corpus, max_samples=max_samples, device=device)
+    quantize_fn, dequantize_fn = _build_kv_helpers(cfg)
+    result = eval_perplexity(
+        llm, tokenizer,
+        corpus_path=corpus,
+        max_samples=max_samples,
+        device=device,
+        quantize_fn=quantize_fn,
+        dequantize_fn=dequantize_fn,
+    )
 
     console.print(result)
 
@@ -185,7 +219,9 @@ def eval_needle_cmd(
     device = resolve_device(llm)
 
     from src.eval.needle import eval_needle
-    result = eval_needle(llm, tokenizer, needle_file=needle_file, device=device)
+    quantize_fn, dequantize_fn = _build_kv_helpers(cfg)
+    cache_factory = _build_cache_factory(quantize_fn, dequantize_fn)
+    result = eval_needle(llm, tokenizer, needle_file=needle_file, device=device, cache_factory=cache_factory)
 
     if result_json and result_json.exists():
         import json
@@ -213,7 +249,9 @@ def eval_tasks(
     device = resolve_device(llm)
 
     from src.eval.task_score import eval_task_score
-    result = eval_task_score(llm, tokenizer, prompts_file=prompts, device=device)
+    quantize_fn, dequantize_fn = _build_kv_helpers(cfg)
+    cache_factory = _build_cache_factory(quantize_fn, dequantize_fn)
+    result = eval_task_score(llm, tokenizer, prompts_file=prompts, device=device, cache_factory=cache_factory)
 
     if result_json and result_json.exists():
         import json

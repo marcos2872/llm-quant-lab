@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -48,9 +49,13 @@ def _score_prompt(
     tokenizer: Any,
     max_new_tokens: int,
     device: str,
+    cache_factory: Callable | None = None,
 ) -> dict:
     """Executa um prompt e retorna scores."""
     inputs = tokenizer(entry["prompt"], return_tensors="pt").to(device)
+    extra: dict = {}
+    if cache_factory is not None:
+        extra["past_key_values"] = cache_factory()
     with torch.no_grad():
         out_ids = model.generate(
             **inputs,
@@ -58,6 +63,7 @@ def _score_prompt(
             do_sample=False,
             temperature=None,
             top_p=None,
+            **extra,
         )
     input_len = inputs["input_ids"].shape[-1]
     generated = tokenizer.decode(out_ids[0][input_len:], skip_special_tokens=True)
@@ -76,15 +82,18 @@ def eval_task_score(
     prompts_file: Path = Path("benchmarks/prompts/basic.jsonl"),
     max_new_tokens: int = 64,
     device: str = "cpu",
+    cache_factory: Callable | None = None,
 ) -> dict:
     """
     Avalia o modelo em todos os prompts de prompts_file.
 
+    cache_factory: quando fornecido, cria QuantizedDynamicCache fresco
+    por prompt para avaliar com KV cache quantizado ativo.
     Retorna dict com 'avg_f1', 'exact_match_rate', 'scores'.
     """
     entries = [json.loads(line) for line in prompts_file.read_text().splitlines() if line.strip()]
     scores = [
-        _score_prompt(entry, model, tokenizer, max_new_tokens, device)
+        _score_prompt(entry, model, tokenizer, max_new_tokens, device, cache_factory)
         for entry in track(entries, description="Task score...")
     ]
 
