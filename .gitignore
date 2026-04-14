@@ -27,9 +27,9 @@ results/raw/*.json
 !results/raw/.gitkeep
 
 # ── Relatórios gerados (reproduzíveis via make report) ───────────────────────
-results/reports/*.csv
-results/reports/*.png
-!results/reports/.gitkeep
+# results/reports/*.csv
+# results/reports/*.png
+# !results/reports/.gitkeep
 
 # ── Resultados de benchmark longo (reproduzíveis via make benchmark-long) ────
 results/long/*
