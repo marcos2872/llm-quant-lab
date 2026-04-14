@@ -40,7 +40,7 @@ def _run_single_bits(
     max_new_tokens = config.get("max_new_tokens", 256)
 
     results = [
-        measure_prompt(entry, model, tokenizer, max_new_tokens, device)
+        measure_prompt(entry, model, tokenizer, max_new_tokens, device, analytical_kv=True)
         for entry in track(prompts, description=f"INT{bits}...")
     ]
     del model, tokenizer

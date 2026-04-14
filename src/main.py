@@ -83,6 +83,22 @@ def _build_cache_factory(quantize_fn: object, dequantize_fn: object) -> object:
     return _factory
 
 
+def _load_eval_config(config: Path, result_json: Path | None) -> dict:
+    """
+    Carrega config para avaliação priorizando o config embutido no JSON de run.
+
+    Quando result_json é fornecido e contém o campo 'config', usa-o para
+    garantir que cada run seja avaliado com seu próprio método/bits/modelo.
+    Fallback para _load_config(config) quando o JSON não tiver config embutido.
+    """
+    if result_json and result_json.exists():
+        import json as _json
+        payload = _json.loads(result_json.read_text())
+        if "config" in payload:
+            return payload["config"]
+    return _load_config(config)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # FASE 1 — Baseline
 # ══════════════════════════════════════════════════════════════════════════════
@@ -172,7 +188,7 @@ def eval_ppl(
     model: Annotated[str | None, typer.Option("--model", "-m")] = None,
 ) -> None:
     """Calcula perplexidade do modelo no corpus WikiText-2."""
-    cfg = _load_config(config)
+    cfg = _load_eval_config(config, result_json)
     cfg = _patch_model(cfg, model)
 
     from src.runner._utils import resolve_device
@@ -210,7 +226,7 @@ def eval_needle_cmd(
     model: Annotated[str | None, typer.Option("--model", "-m")] = None,
 ) -> None:
     """Avalia recall no teste Needle-in-a-Haystack."""
-    cfg = _load_config(config)
+    cfg = _load_eval_config(config, result_json)
     cfg = _patch_model(cfg, model)
 
     from src.runner._utils import resolve_device
@@ -240,7 +256,7 @@ def eval_tasks(
     model: Annotated[str | None, typer.Option("--model", "-m")] = None,
 ) -> None:
     """Avalia F1 e exact match em conjunto fixo de prompts QA."""
-    cfg = _load_config(config)
+    cfg = _load_eval_config(config, result_json)
     cfg = _patch_model(cfg, model)
 
     from src.runner._utils import resolve_device
