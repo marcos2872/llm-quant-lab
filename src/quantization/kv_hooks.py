@@ -156,19 +156,26 @@ def install_kv_proj_hooks(
     kv_mem_tracker: list[float] = []
     handles: list[Any] = []
 
+    # head_dim preferido a partir do atributo do módulo; fallback via k_proj
+    _head_dim_hint = getattr(attn_layers[0], "head_dim", None)
+
     for attn in attn_layers:
-        # detecta n_kv_heads e head_dim do módulo de atenção para reshape correto
-        n_kv_heads = (
-            getattr(attn, "num_key_value_heads", None)
-            or getattr(attn, "num_kv_heads", None)
-            or getattr(attn, "num_heads", 1)
-        )
-        head_dim = getattr(attn, "head_dim", None)
+        head_dim: int | None = getattr(attn, "head_dim", _head_dim_hint)
 
         for proj_name in ("k_proj", "v_proj"):
             proj = getattr(attn, proj_name, None)
             if proj is None:
                 continue
+
+            # n_kv_heads derivado de proj.out_features // head_dim — robusto
+            # a diferentes versões do transformers que não expõem o atributo.
+            proj_out: int = getattr(proj, "out_features", 0)
+            if head_dim and proj_out and proj_out % head_dim == 0:
+                n_kv_heads: int = proj_out // head_dim
+            else:
+                # fallback: trata toda a saída como um único "head virtual"
+                n_kv_heads = 1
+                head_dim = proj_out or head_dim
 
             def _make_proj_hook(
                 qfn: Callable, dqfn: Callable,
@@ -193,7 +200,6 @@ def install_kv_proj_hooks(
                     tracker.append(_tensor_mb(q))
                     recon = dqfn(q, meta)
                     if output.ndim == 3:
-                        b, s, total = orig_shape
                         return recon.permute(0, 2, 1, 3).reshape(orig_shape)
                     return recon
                 return hook
