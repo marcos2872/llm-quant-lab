@@ -200,60 +200,58 @@ def _split_channels(
 
 # ── API pública ───────────────────────────────────────────────────────────────
 
-def _build_meta(
-    q_outlier: torch.Tensor, cb_normal: torch.Tensor, cb_outlier: torch.Tensor,
-    outlier_idx: torch.Tensor, normal_idx: torch.Tensor, norms: torch.Tensor,
-    rotation_seed: int, head_dim: int, n_tokens: int,
-    original_shape: tuple, original_dtype: torch.dtype,
-) -> dict:
-    """Constrói dicionário de metadados para dequantize_turboquant."""
-    return {
-        "q_outlier": q_outlier, "cb_normal": cb_normal, "cb_outlier": cb_outlier,
-        "outlier_idx": outlier_idx, "normal_idx": normal_idx, "norms": norms,
-        "rotation_seed": rotation_seed, "head_dim": head_dim, "n_tokens": n_tokens,
-        "original_shape": original_shape, "original_dtype": str(original_dtype),
-    }
-
 
 def quantize_turboquant(
     tensor: torch.Tensor,
     bits: int = 4,
-    outlier_bits: int = 0,
-    outlier_channels: int = 32,
+    outlier_bits: int = 0,      # mantido para compatibilidade; ignorado
+    outlier_channels: int = 32, # mantido para compatibilidade; ignorado
     rotation_seed: int = 42,
-    layer_idx: int = 0,  # mantido para compatibilidade de interface; não utilizado
+    layer_idx: int = 0,         # mantido para compatibilidade; não utilizado
 ) -> tuple[torch.Tensor, dict]:
-    """Quantiza KV com TurboQuantmse (arXiv:2504.19874 Algoritmo 1).
-    outlier_bits=0 → bits+1 automático. Retorna (q_normal, meta)."""
+    """
+    Quantiza KV com TurboQuant (arXiv:2504.19874 Algoritmo 1).
+
+    Pipeline fiel ao paper:
+      1. Reshape para (n_tokens, head_dim)
+      2. Normaliza cada vetor para S^{d-1} (Lema 1: ||x||=1)
+      3. Rotaciona com Π ortogonal → após rotação cada coordenada segue
+         N(0, 1/d) marginalmente; não há outliers neste espaço
+      4. Quantização escalar com codebook único Lloyd-Max para N(0, 1/√d)
+         (Algoritmo 1 linha 6; codebook data-independent, calculado uma vez)
+      5. Armazena (q_all, codebook, norms) para reconstrução
+
+    Nota: outlier_bits e outlier_channels são aceitos por compatibilidade de
+    interface com _get_quant_fns mas não utilizados. A rotação ortogonal já
+    redistribui a energia uniformemente, eliminando outliers no espaço rotacionado.
+    """
     original_shape, original_dtype = tensor.shape, tensor.dtype
     device, head_dim = tensor.device, tensor.shape[-1]
-    # bits*2 garante SNR dos canais outlier próximo ao FP16 (ver diagnóstico)
-    eff_outlier_bits = outlier_bits if outlier_bits > 0 else bits * 2
 
     # 1. Normalização para esfera unitária S^{d-1} (Lema 1)
     flat = tensor.float().reshape(-1, head_dim)
     normalized, norms = _normalize_to_sphere(flat)
+    n_tokens = flat.shape[0]
 
     # 2. Rotação Π ∈ R^{d×d} (Algoritmo 1, linha 5)
     R = _get_rotation(head_dim, rotation_seed, device)
     rotated = normalized @ R
 
-    # 3. Detecta canais outlier no espaço rotacionado
-    outlier_idx, normal_idx, outlier_vals, normal_vals = _split_channels(
-        rotated, outlier_channels, head_dim, device
-    )
+    # 3. Codebook único Lloyd-Max para N(0, 1/√d) + quantização escalar
+    codebook = _get_theoretical_codebook(bits, head_dim, device)
+    q_all = _pack_indices(_scalar_quantize(rotated, codebook), bits)
 
-    # 4. Dois codebooks independentes + quantização escalar (Seção 4.3)
-    cb_normal  = _get_theoretical_codebook(bits, head_dim, device)
-    cb_outlier = _get_theoretical_codebook(eff_outlier_bits, head_dim, device)
-    q_normal  = _pack_indices(_scalar_quantize(normal_vals,  cb_normal),  bits)
-    q_outlier = _pack_indices(_scalar_quantize(outlier_vals, cb_outlier), eff_outlier_bits)
-
-    meta = _build_meta(
-        q_outlier, cb_normal, cb_outlier, outlier_idx, normal_idx, norms,
-        rotation_seed, head_dim, flat.shape[0], original_shape, original_dtype,
-    )
-    return q_normal, meta
+    meta = {
+        "codebook": codebook,
+        "norms": norms,
+        "rotation_seed": rotation_seed,
+        "head_dim": head_dim,
+        "n_tokens": n_tokens,
+        "original_shape": original_shape,
+        "original_dtype": str(original_dtype),
+        "bits": bits,
+    }
+    return q_all, meta
 
 
 def dequantize_turboquant(quantized: torch.Tensor, meta: dict) -> torch.Tensor:
@@ -261,35 +259,25 @@ def dequantize_turboquant(quantized: torch.Tensor, meta: dict) -> torch.Tensor:
     Reconstrói tensor KV a partir do formato comprimido.
 
     Reverso de quantize_turboquant (Algoritmo 1 DeQuant_mse):
-      1. Reconstrói canais normais e outlier a partir dos codebooks
-      2. Monta tensor completo no espaço rotacionado
-      3. Aplica Πᵀ = Π⁻¹ (rotação inversa)
-      4. Desnormaliza pelas normas originais
+      1. Desempacota índices e faz lookup no codebook → espaço rotacionado
+      2. Aplica Πᵀ = Π⁻¹ (rotação inversa; ortogonal → Πᵀ = Π⁻¹)
+      3. Desnormaliza pelas normas originais (desfaz normalização para S^{d-1})
     """
     device = quantized.device
     dtype = getattr(torch, meta["original_dtype"].replace("torch.", ""))
     head_dim = meta["head_dim"]
     n_tokens = meta["n_tokens"]
+    bits = meta["bits"]
 
-    # 1. Desempacota índices e reconstrói as duas partições
-    bits_n = len(meta["cb_normal"]).bit_length() - 1
-    bits_o = len(meta["cb_outlier"]).bit_length() - 1
-    n_n, n_o = len(meta["normal_idx"]), len(meta["outlier_idx"])
-    normal_recon  = _scalar_dequantize(
-        _unpack_indices(quantized,                    bits_n, n_n), meta["cb_normal"].to(device))
-    outlier_recon = _scalar_dequantize(
-        _unpack_indices(meta["q_outlier"].to(device), bits_o, n_o), meta["cb_outlier"].to(device))
+    # 1. Desempacota índices e reconstrói no espaço rotacionado
+    indices = _unpack_indices(quantized, bits, head_dim)  # (n_tokens, head_dim)
+    full_rotated = _scalar_dequantize(indices, meta["codebook"].to(device))
 
-    # 2. Monta tensor rotacionado completo
-    full_rotated = torch.zeros(n_tokens, head_dim, device=device, dtype=torch.float32)
-    full_rotated[:, meta["normal_idx"].to(device)]  = normal_recon
-    full_rotated[:, meta["outlier_idx"].to(device)] = outlier_recon
-
-    # 3. Rotação inversa Πᵀ (Πᵀ = Π⁻¹ para matriz ortogonal)
+    # 2. Rotação inversa Πᵀ
     R = _get_rotation(head_dim, meta["rotation_seed"], device)
     reconstructed = full_rotated @ R.T
 
-    # 4. Desnormaliza pelas normas originais (desfaz normalização para S^{d-1})
+    # 3. Desnormaliza pelas normas originais
     reconstructed = _denormalize(reconstructed, meta["norms"].to(device))
 
     return reconstructed.reshape(meta["original_shape"]).to(dtype)

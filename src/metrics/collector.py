@@ -125,7 +125,7 @@ def _run_decode(
         output_ids = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
-            min_new_tokens=1,
+            min_new_tokens=max_new_tokens,
             do_sample=False,
             temperature=None,
             top_p=None,
