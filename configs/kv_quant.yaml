@@ -11,6 +11,6 @@ kv_quantization:
   enabled: true
   method: turboquant    # uniform | kivi | turboquant
   bits: 4               # 2 | 4 | 8
-  group_size: 64        # tokens por grupo (kivi / turboquant)
-  outlier_channels: 32  # canais preservados em FP16 (turboquant)
+  group_size: 128       # aumentado de 64 → melhor estimativa do codebook Lloyd-Max
+  outlier_channels: 8   # reduzido de 32 → detecção pós-rotação é mais precisa
   rotation_seed: 42     # semente para rotação ortogonal (turboquant)

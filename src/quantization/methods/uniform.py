@@ -19,6 +19,7 @@ import torch
 def quantize_uniform(
     tensor: torch.Tensor,
     bits: int = 4,
+    layer_idx: int = 0,  # ignorado; mantém interface compatível com turboquant
 ) -> tuple[torch.Tensor, dict]:
     """
     Quantiza tensor com escala uniforme global min-max.

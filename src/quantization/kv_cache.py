@@ -52,11 +52,14 @@ class QuantizedDynamicCache(DynamicCache):
     # ── handlers internos ────────────────────────────────────────────────────
 
     def _handle_prefill(
-        self, key_states: torch.Tensor, value_states: torch.Tensor
+        self,
+        key_states: torch.Tensor,
+        value_states: torch.Tensor,
+        layer_idx: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Quantiza e armazena todo o contexto de prefill."""
-        qk, mk = self.quantize_fn(key_states)
-        qv, mv = self.quantize_fn(value_states)
+        """Quantiza e armazena o prefill com codebook por camada."""
+        qk, mk = self.quantize_fn(key_states, layer_idx=layer_idx)
+        qv, mv = self.quantize_fn(value_states, layer_idx=layer_idx)
         self._qhist.append((qk, mk, qv, mv))
         self._fp16k.append(None)
         self._fp16v.append(None)
@@ -100,7 +103,7 @@ class QuantizedDynamicCache(DynamicCache):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Roteia para prefill ou decode e atualiza seq_len."""
         if layer_idx >= len(self._qhist):
-            full_k, full_v = self._handle_prefill(key_states, value_states)
+            full_k, full_v = self._handle_prefill(key_states, value_states, layer_idx)
         else:
             full_k, full_v = self._handle_decode(key_states, value_states, layer_idx)
         self._seq_len = full_k.shape[-2]

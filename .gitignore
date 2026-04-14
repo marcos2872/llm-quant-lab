@@ -32,7 +32,10 @@ results/reports/*.png
 !results/reports/.gitkeep
 
 # ── Resultados de benchmark longo (reproduzíveis via make benchmark-long) ────
-results/long/
+results/long/*
+results/long/*
+!results/long/.gitkeep
+!results/long/reports/.gitkeep
 
 # ── Ambiente ──────────────────────────────────────────────────────────────────
 .env

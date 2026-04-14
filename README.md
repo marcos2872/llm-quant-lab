@@ -65,13 +65,14 @@ Resultados salvos em `results/raw/*.json`, `results/reports/summary.csv` e `resu
 
 ---
 
-## Pipeline completo
+## Pipelines prontos
 
-```bash
-make all
-```
-
-Equivale a: `baseline → weight-quant → kv-quant → annotate-all → report`.
+| Comando | Descrição |
+|---|---|
+| `make all` | Pipeline básico — 1 config por modo: `baseline → weight-quant → kv-quant → annotate-all → report` |
+| `make sweep-all` | Benchmark completo — todos os modos e bits. Aceita `PROMPTS=`, `CONFIG=`, `RAW_DIR=`, `OUTPUT_DIR=` |
+| `make benchmark-7b` | `sweep-all` pré-configurado para `Qwen/Qwen2.5-7B-Instruct` em `results/7b/` |
+| `make benchmark-long` | `sweep-all` com contexto longo 4k+ tokens em `results/long/` (limpa dados anteriores) |
 
 ---
 
@@ -85,15 +86,31 @@ make help
 
 | Comando | Descrição | Variáveis opcionais |
 |---|---|---|
-| `make baseline` | Run FP16 sem quantização | `MODEL=` `RAW_DIR=` |
-| `make weight-quant` | Quantização de pesos via bitsandbytes | `BITS=4` `BITS=4,8` `RAW_DIR=` |
-| `make kv-quant` | Quantização de KV cache | `METHOD=turboquant\|kivi\|uniform` `BITS=4` `RAW_DIR=` |
+| `make baseline` | Run FP16 sem quantização | `MODEL=` `PROMPTS=` `RAW_DIR=` |
+| `make weight-quant` | Quantização de pesos via bitsandbytes | `BITS=4\|8\|4,8` `PROMPTS=` `RAW_DIR=` |
+| `make kv-quant` | Quantização de KV cache (1 método/bits) | `METHOD=turboquant\|kivi\|uniform` `BITS=4\|2` `PROMPTS=` `RAW_DIR=` |
+| `make kv-quant-long` | KV cache quant com contexto longo 4k+ (3 métodos × bits 4 e 2) | `MODEL=` `RAW_DIR=` |
+
+### Sweeps automáticos
+
+| Comando | Descrição | Variáveis opcionais |
+|---|---|---|
+| `make sweep-weight` | Weight quant INT4 + INT8 em sequência | `MODEL=` `PROMPTS=` `RAW_DIR=` |
+| `make sweep-kv` | KV cache quant — 3 métodos × bits 4 e 2 (6 runs) | `MODEL=` `PROMPTS=` `RAW_DIR=` |
+| `make sweep-all` | Benchmark completo — baseline + sweep-weight + sweep-kv + annotate + report | `MODEL=` `PROMPTS=` `CONFIG=` `RAW_DIR=` `OUTPUT_DIR=` |
+
+### Benchmark de escalonamento de contexto
+
+| Comando | Descrição | Variáveis opcionais |
+|---|---|---|
+| `make context-sweep` | Mede throughput/memória para contextos de 512 → 4096 tokens | `MODEL=` `CONFIG=` `RAW_DIR=` |
+| `make context-report` | Gera `context_scaling.png` a partir dos dados do `context-sweep` | `RAW_DIR=` `OUTPUT_DIR=` |
 
 ### Avaliação de qualidade
 
 | Comando | Descrição | Variáveis opcionais |
 |---|---|---|
-| `make annotate-all` | Descobre todos os JSONs em `RAW_DIR` e os anota com PPL + Needle + F1 | `RAW_DIR=` |
+| `make annotate-all` | Anota todos os JSONs em `RAW_DIR` com PPL + Needle + F1 | `RAW_DIR=` |
 | `make all-eval` | Alias para `annotate-all` | `RAW_DIR=` |
 | `make eval-ppl` | Calcula perplexidade individualmente | `CONFIG=` `RESULT_JSON=` |
 | `make eval-needle` | Avalia Needle-in-a-Haystack individualmente | `CONFIG=` `RESULT_JSON=` |
@@ -104,19 +121,29 @@ make help
 | Comando | Descrição | Variáveis opcionais |
 |---|---|---|
 | `make report` | Gera `summary.csv` + 3 gráficos PNG | `RAW_DIR=` `OUTPUT_DIR=` |
-| `make all` | Pipeline completo | `MODEL=` `BITS=` `RAW_DIR=` `OUTPUT_DIR=` |
 | `make clean` | Remove JSONs, CSVs e PNGs gerados | — |
+| `make env` | Instala dependências sem criar `.env` | — |
+| `make setup` | Instala deps, cria `.env` e pastas de trabalho | — |
 
-### Usando diretórios customizados
+### Usando diretórios e prompts customizados
 
 ```bash
 # Salvar runs em diretório próprio
 make baseline     RAW_DIR=experimentos/run1
 make weight-quant BITS=4 RAW_DIR=experimentos/run1
 
+# Usar conjunto de prompts alternativo
+make baseline PROMPTS=benchmarks/prompts/meu_dataset.jsonl
+
 # Anotar e gerar relatório no mesmo diretório
 make annotate-all RAW_DIR=experimentos/run1
 make report       RAW_DIR=experimentos/run1 OUTPUT_DIR=experimentos/run1/report
+
+# Benchmark completo para modelo 7B
+make benchmark-7b
+
+# Benchmark completo com contexto longo (limpa results/long/ antes)
+make benchmark-long
 ```
 
 ---

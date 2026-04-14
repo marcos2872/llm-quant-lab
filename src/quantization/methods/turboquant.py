@@ -1,7 +1,15 @@
 """
 src/quantization/methods/turboquant.py
 ----------------------------------------
-TurboQuant-style: rotação ortogonal Haar + Lloyd-Max + outlier channels em FP16.
+TurboQuant-style: rotação ortogonal Haar (head_dim completo) + detecção de
+outliers pós-rotação + Lloyd-Max + outlier channels em FP16.
+
+Melhorias em relação à versão original:
+  1. Rotação aplicada ao head_dim COMPLETO antes de separar outliers.
+     → Detecção de outliers no espaço isotropizado (mais precisa).
+     → Reduz outlier_channels necessários sem perda de qualidade.
+  2. Codebook Lloyd-Max por camada (chave: bits + group_size + model_id + layer_idx).
+     → Captura distribuições distintas entre as camadas de atenção.
 
 Inspirado em:
   "TurboQuant: Efficient KV Cache Compression via Rotation and Codebook Quantization"
@@ -14,15 +22,14 @@ import numpy as np
 import torch
 
 # ── caches de sessão ──────────────────────────────────────────────────────────
-# Chave da rotation_cache: (dim, seed)
-# Chave da codebook_cache: (bits, group_size, model_id)
-# model_id evita reutilização entre modelos com distribuições diferentes
+# rotation_cache:  (dim, seed)
+# codebook_cache:  (bits, group_size, model_id, layer_idx)
 _rotation_cache: dict[tuple[int, int], torch.Tensor] = {}
-_codebook_cache: dict[tuple[int, int, str], torch.Tensor] = {}
+_codebook_cache: dict[tuple[int, int, str, int], torch.Tensor] = {}
 
 
 def clear_caches() -> None:
-    """Limpa os caches de rotação e codebook. Útil em sessões longas ou multirrun."""
+    """Limpa os caches de rotação e codebook. Útil em sessões longas ou multirun."""
     _rotation_cache.clear()
     _codebook_cache.clear()
 
@@ -44,9 +51,10 @@ def _get_codebook(
     bits: int,
     group_size: int,
     model_id: str,
+    layer_idx: int = 0,
 ) -> torch.Tensor:
-    """Retorna (e cacheia) codebook Lloyd-Max para (bits, group_size, model_id)."""
-    key = (bits, group_size, model_id)
+    """Retorna (e cacheia) codebook Lloyd-Max para (bits, group_size, model_id, layer_idx)."""
+    key = (bits, group_size, model_id, layer_idx)
     if key in _codebook_cache:
         return _codebook_cache[key]
 
@@ -78,12 +86,11 @@ def _split_channels(
     device: torch.device,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
-    Separa canais outlier (alta variância) dos canais normais.
+    Separa canais outlier (alta magnitude média) dos canais normais.
 
     Garante que normal_idx seja dtype=int64 mesmo quando a lista fica vazia.
+    Deve ser chamada sobre o tensor JÁ ROTACIONADO para detecção precisa.
     """
-    # abs().mean() detecta canais com alta magnitude média (mais correto que var,
-    # que falha para outliers constantes com variância zero)
     channel_score = flat.abs().mean(dim=0)
     n_outliers = min(outlier_channels, head_dim)
     _, outlier_idx = channel_score.topk(n_outliers)
@@ -91,35 +98,41 @@ def _split_channels(
     outlier_set = set(outlier_idx.tolist())
     normal_idx = torch.tensor(
         [i for i in range(head_dim) if i not in outlier_set],
-        dtype=torch.long,   # explícito: evita float32 quando a lista fica vazia
+        dtype=torch.long,
         device=device,
     )
     return outlier_idx, normal_idx, flat[:, outlier_idx], flat[:, normal_idx]
 
 
 def _quantize_groups(
-    rotated: torch.Tensor,
+    values: torch.Tensor,
     group_size: int,
     bits: int,
     rotation_seed: int,
     model_id: str,
+    layer_idx: int = 0,
 ) -> tuple[torch.Tensor, dict]:
-    """Aplica padding, agrupa e quantiza com codebook cacheado."""
-    n_rows, dim_normal = rotated.shape
-    pad = (group_size - dim_normal % group_size) % group_size if dim_normal > 0 else 0
+    """Aplica padding, agrupa e quantiza com codebook Lloyd-Max por camada."""
+    n_rows, dim = values.shape
+    pad = (group_size - dim % group_size) % group_size if dim > 0 else 0
     if pad > 0:
-        rotated = torch.nn.functional.pad(rotated, (0, pad))
-    n_groups = rotated.shape[-1] // group_size if dim_normal > 0 else 0
-    grouped = rotated.reshape(n_rows, n_groups, group_size) if n_groups > 0 else rotated
+        values = torch.nn.functional.pad(values, (0, pad))
+    n_groups = values.shape[-1] // group_size if dim > 0 else 0
+    grouped = values.reshape(n_rows, n_groups, group_size) if n_groups > 0 else values
 
     sample = grouped.reshape(-1, group_size) if n_groups > 0 else grouped
     if sample.shape[0] > 4096:
-        perm = torch.randperm(sample.shape[0], generator=torch.Generator().manual_seed(rotation_seed))
+        perm = torch.randperm(
+            sample.shape[0],
+            generator=torch.Generator().manual_seed(rotation_seed),
+        )
         sample = sample[perm[:4096]]
 
     n_levels = 2 ** bits
-    centroids = _get_codebook(sample.reshape(-1), n_levels, bits, group_size, model_id)
-    centroids = centroids.to(rotated.device)
+    centroids = _get_codebook(
+        sample.reshape(-1), n_levels, bits, group_size, model_id, layer_idx
+    )
+    centroids = centroids.to(values.device)
 
     dists = (grouped.unsqueeze(-1) - centroids).abs()
     q_indices = dists.argmin(dim=-1).to(torch.int16)
@@ -127,7 +140,7 @@ def _quantize_groups(
 
 
 def _degenerate_meta(
-    flat: torch.Tensor,
+    n_rows: int,
     outlier_idx: torch.Tensor,
     outlier_vals: torch.Tensor,
     normal_idx: torch.Tensor,
@@ -137,14 +150,21 @@ def _degenerate_meta(
     original_shape: tuple,
     original_dtype: torch.dtype,
     device: torch.device,
+    head_dim: int,
+    layer_idx: int = 0,
 ) -> tuple[torch.Tensor, dict]:
     """Retorna estrutura vazia para o caso em que dim_normal == 0."""
     return torch.zeros(0, dtype=torch.int16, device=device), {
-        "n_rows": flat.shape[0], "n_groups": 0, "group_size": group_size, "pad": 0,
+        "n_rows": n_rows, "n_groups": 0, "group_size": group_size, "pad": 0,
         "centroids": torch.zeros(2 ** bits, device=device),
-        "outlier_idx": outlier_idx, "outlier_vals": outlier_vals.to(original_dtype),
-        "normal_idx": normal_idx, "rotation_seed": rotation_seed, "dim_normal": 0,
-        "original_shape": original_shape, "original_dtype": str(original_dtype),
+        "outlier_idx": outlier_idx,
+        "outlier_vals": outlier_vals.to(original_dtype),
+        "normal_idx": normal_idx,
+        "rotation_seed": rotation_seed,
+        "head_dim": head_dim,
+        "dim_normal": 0,
+        "original_shape": original_shape,
+        "original_dtype": str(original_dtype),
     }
 
 
@@ -155,56 +175,84 @@ def quantize_turboquant(
     outlier_channels: int = 32,
     rotation_seed: int = 42,
     model_id: str = "",
+    layer_idx: int = 0,
 ) -> tuple[torch.Tensor, dict]:
-    """Quantiza tensor KV com rotação ortogonal + Lloyd-Max."""
+    """
+    Quantiza tensor KV com rotação ortogonal completa + detecção de outliers pós-rotação.
+
+    Pipeline:
+      1. Rotaciona o head_dim COMPLETO → isotropiza a variância entre todos os canais.
+      2. Detecta outliers NO ESPAÇO ROTACIONADO (distribuição mais uniforme → seleção precisa).
+      3. Preserva canais outlier em FP16; quantiza os demais com codebook Lloyd-Max por camada.
+    """
     original_shape, original_dtype = tensor.shape, tensor.dtype
     device, head_dim = tensor.device, tensor.shape[-1]
 
     flat = tensor.float().reshape(-1, head_dim)
+
+    # 1. Rotação do head_dim completo — isotropiza variância antes da separação
+    R = _get_rotation(head_dim, rotation_seed, device)
+    rotated_full = flat @ R
+
+    # 2. Detecta outliers no espaço rotacionado (mais representativo que o original)
     outlier_idx, normal_idx, outlier_vals, normal_vals = _split_channels(
-        flat, outlier_channels, head_dim, device
+        rotated_full, outlier_channels, head_dim, device
     )
     dim_normal = normal_vals.shape[-1]
 
     if dim_normal == 0:
         return _degenerate_meta(
-            flat, outlier_idx, outlier_vals, normal_idx,
+            flat.shape[0], outlier_idx, outlier_vals, normal_idx,
             bits, group_size, rotation_seed, original_shape, original_dtype, device,
+            head_dim=head_dim, layer_idx=layer_idx,
         )
 
-    R = _get_rotation(dim_normal, rotation_seed, device)
+    # 3. Quantiza canais normais — já rotacionados, sem segunda rotação
     q_indices, group_meta = _quantize_groups(
-        normal_vals @ R, group_size, bits, rotation_seed, model_id
+        normal_vals, group_size, bits, rotation_seed, model_id, layer_idx
     )
     meta = {
         **group_meta,
-        "centroids": _codebook_cache[(bits, group_size, model_id)].to(device),
-        "outlier_idx": outlier_idx, "outlier_vals": outlier_vals.to(original_dtype),
-        "normal_idx": normal_idx, "rotation_seed": rotation_seed, "dim_normal": dim_normal,
-        "original_shape": original_shape, "original_dtype": str(original_dtype),
+        "centroids": _codebook_cache[(bits, group_size, model_id, layer_idx)].to(device),
+        "outlier_idx": outlier_idx,
+        "outlier_vals": outlier_vals.to(original_dtype),
+        "normal_idx": normal_idx,
+        "rotation_seed": rotation_seed,
+        "head_dim": head_dim,
+        "dim_normal": dim_normal,
+        "original_shape": original_shape,
+        "original_dtype": str(original_dtype),
     }
     return q_indices, meta
 
 
 def dequantize_turboquant(quantized: torch.Tensor, meta: dict) -> torch.Tensor:
-    """Reconstrói tensor aplicando rotação inversa e reinserindo outliers."""
+    """
+    Reconstrói tensor KV a partir do formato comprimido.
+
+    Reverso de quantize_turboquant:
+      1. Reconstrói canais normais a partir do codebook Lloyd-Max.
+      2. Monta tensor completo no espaço rotacionado (normais + outliers FP16).
+      3. Aplica rotação inversa (Rᵀ = R⁻¹ para matriz ortogonal).
+    """
     dtype = getattr(torch, meta["original_dtype"].replace("torch.", ""))
     device = quantized.device
 
+    # 1. Reconstrói canais normais quantizados
     centroids = meta["centroids"].to(device)
     reconstructed = centroids[quantized.long()].reshape(meta["n_rows"], -1).float()
     if meta["pad"] > 0:
         reconstructed = reconstructed[:, : -meta["pad"]]
 
+    # 2. Monta tensor completo no espaço rotacionado
+    head_dim = meta["head_dim"]
+    full_rotated = torch.zeros(meta["n_rows"], head_dim, device=device, dtype=torch.float32)
     if meta["dim_normal"] > 0:
-        R = _get_rotation(meta["dim_normal"], meta["rotation_seed"], device)
-        unrotated = reconstructed @ R.T
-    else:
-        unrotated = reconstructed
+        full_rotated[:, meta["normal_idx"].to(device)] = reconstructed
+    full_rotated[:, meta["outlier_idx"].to(device)] = meta["outlier_vals"].float().to(device)
 
-    head_dim = meta["dim_normal"] + len(meta["outlier_idx"])
-    full = torch.zeros(meta["n_rows"], head_dim, device=device, dtype=torch.float32)
-    if meta["dim_normal"] > 0:
-        full[:, meta["normal_idx"].to(device)] = unrotated
-    full[:, meta["outlier_idx"].to(device)] = meta["outlier_vals"].float().to(device)
+    # 3. Rotação inversa sobre head_dim completo (Rᵀ = R⁻¹)
+    R = _get_rotation(head_dim, meta["rotation_seed"], device)
+    full = full_rotated @ R.T
+
     return full.reshape(meta["original_shape"]).to(dtype)

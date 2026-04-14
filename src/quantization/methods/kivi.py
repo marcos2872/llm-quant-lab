@@ -27,6 +27,7 @@ def quantize_kivi(
     tensor: torch.Tensor,
     bits: int = 4,
     group_size: int = 64,
+    layer_idx: int = 0,  # ignorado; mantém interface compatível com turboquant
 ) -> tuple[torch.Tensor, dict]:
     """
     Quantização por grupo ao longo da última dimensão (canal/head_dim).
