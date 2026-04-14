@@ -127,17 +127,18 @@ def _scalar_quantize(
     Implementa Algoritmo 1 linha 6: idx_j = argmin_k |y_j − c_k|
     values:   (n_tokens, dim)
     codebook: (n_levels,)
-    retorna:  (n_tokens, dim) int16
+    retorna:  (n_tokens, dim) int8 se n_levels <= 128, senão int16
     """
     dists = (values.unsqueeze(-1) - codebook).abs()
-    return dists.argmin(dim=-1).to(torch.int16)
+    dtype = torch.int8 if len(codebook) <= 128 else torch.int16
+    return dists.argmin(dim=-1).to(dtype)
 
 
 def _scalar_dequantize(
     indices: torch.Tensor,
     codebook: torch.Tensor,
 ) -> torch.Tensor:
-    """Reconstrói valores float a partir dos índices e codebook."""
+    """Reconstrói valores float a partir dos índices e codebook (aceita int8 e int16)."""
     return codebook[indices.long()]
 
 
