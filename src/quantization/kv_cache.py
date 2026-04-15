@@ -25,6 +25,28 @@ def _mb(t: torch.Tensor) -> float:
     return t.element_size() * t.numel() / 1024 ** 2
 
 
+# Chaves de codebook são caches globais compartilhados entre layers/prompts —
+# não contabilizar como overhead por run evita double-counting severo.
+_CODEBOOK_KEYS = frozenset({"codebook", "codebook_norm", "codebook_out"})
+
+
+def _meta_extra_mb(meta: dict) -> float:
+    """
+    Calcula MB de todos os tensores extras em meta (além do tensor principal).
+
+    Inclui norms, r_norms, q_qjl e equivalentes para modo outlier do TurboQuant.
+    Agnóstico ao método — soma todo torch.Tensor no meta exceto codebooks
+    (cacheados globalmente, não por run).
+    """
+    if not isinstance(meta, dict):
+        return 0.0
+    return sum(
+        _mb(v)
+        for k, v in meta.items()
+        if isinstance(v, torch.Tensor) and k not in _CODEBOOK_KEYS
+    )
+
+
 class QuantizedDynamicCache(DynamicCache):
     """
     DynamicCache com armazenamento quantizado do contexto de prefill.
@@ -63,13 +85,9 @@ class QuantizedDynamicCache(DynamicCache):
         self._qhist.append((qk, mk, qv, mv))
         self._fp16k.append(None)
         self._fp16v.append(None)
-        # Contabiliza FP16 outliers guardados no meta (KIVI/uniform com outlier_channels > 0)
-        out_k = mk.get("outlier_fp16") if isinstance(mk, dict) else None
-        out_v = mv.get("outlier_fp16") if isinstance(mv, dict) else None
-        extra_mb = (
-            (_mb(out_k) if out_k is not None else 0.0)
-            + (_mb(out_v) if out_v is not None else 0.0)
-        )
+        # Contabiliza todos os tensores extras no meta (norms, r_norms, qjl bits,
+        # FP16 outliers — qualquer tensor fora do codebook cacheado globalmente)
+        extra_mb = _meta_extra_mb(mk) + _meta_extra_mb(mv)
         self.tracker.append(_mb(qk) + _mb(qv) + extra_mb)
         return key_states, value_states
 
