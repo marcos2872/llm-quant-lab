@@ -107,14 +107,14 @@ def _get_theoretical_codebook(
     os valores ficam em [-1, 1] com distribuição aproximadamente Gaussiana
     centrada em 0 — N(0, σ≈0.3) cobre [-1,1] com caudas truncadas.
     """
-    key = (bits, head_dim)
+    key = (bits, head_dim, "v3")  # v3: codebook N(0,1) alinhado com rot_scale std
     if key in _codebook_cache:
         return _codebook_cache[key].to(device)
     rng = np.random.default_rng(0)
-    # Gaussian truncada para cobrir adequadamente o intervalo [-1, 1]
-    # após normalização por max-abs: σ=0.3 → ~99.7% dos valores em [−0.9, 0.9]
-    raw = rng.normal(0.0, 0.3, size=500_000).astype(np.float32)
-    samples = torch.from_numpy(raw.clip(-1.0, 1.0))
+    # Após normalização por std/dim, cada coordenada segue N(0, 1).
+    # Lloyd-Max para N(0, 1) distribui os centroides de forma ótima.
+    raw = rng.normal(0.0, 1.0, size=500_000).astype(np.float32)
+    samples = torch.from_numpy(raw.clip(-5.0, 5.0))  # cobre ±5σ (99.9999%)
     centroids = _lloyd_max_1d(samples, 2 ** bits)
     _codebook_cache[key] = centroids
     return centroids.to(device)
@@ -242,8 +242,10 @@ def quantize_turboquant(
     R = _get_rotation(head_dim, rotation_seed, device)
     rotated = normalized @ R
 
-    # 3. Escala data-adaptive: max-abs por dimensão → normaliza para [-1, 1]
-    rot_scale = rotated.abs().amax(dim=0, keepdim=True).clamp(min=1e-8)  # (1, head_dim)
+    # 3. Escala data-adaptive: std por dimensão → normaliza para N(0, 1) por dim.
+    # Invariante ao ponto de interceptação (pré ou pós-RoPE): após normalização
+    # para S^{d-1} e rotação ortogonal Π, std/dim ≈ 1/√d independente do RoPE.
+    rot_scale = rotated.std(dim=0, keepdim=True).clamp(min=1e-8)  # (1, head_dim)
     rotated_scaled = rotated / rot_scale
 
     # 4. Codebook único Lloyd-Max para N(0, 0.3) truncada em [-1,1] + quantização escalar
