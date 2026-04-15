@@ -87,6 +87,28 @@ def _quantize_perchannel(
     return packed, t_min, scale, n_elements
 
 
+def _quantize_pertoken(
+    tensor: torch.Tensor, bits: int
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    """
+    Quantização per-token: cada posição de sequência tem sua própria escala.
+
+    Usada para o value cache conforme paper KIVI (§3): min/max calculado
+    ao longo de head_dim (dim=-1), produzindo shape (b, h, seq, 1).
+    Contrasta com _quantize_perchannel que usa dim=-2 para keys.
+    """
+    n_levels = 2 ** bits
+    t_min = tensor.min(dim=-1, keepdim=True).values
+    t_max = tensor.max(dim=-1, keepdim=True).values
+    scale = ((t_max - t_min) / (n_levels - 1)).clamp(min=1e-8)
+    q = ((tensor.float() - t_min) / scale).round().clamp(0, n_levels - 1)
+    dtype = torch.int8 if bits < 8 else torch.int16
+    q = q.to(dtype)
+    n_elements = q.numel()
+    packed = _pack_indices_flat(q, bits) if bits in (2, 4) else q
+    return packed, t_min, scale, n_elements
+
+
 def quantize_kivi(
     tensor: torch.Tensor,
     bits: int = 4,
@@ -117,6 +139,50 @@ def quantize_kivi(
         work = tensor
 
     packed, t_min, scale, n_elements = _quantize_perchannel(work, bits)
+
+    meta = {
+        "t_min": t_min, "scale": scale, "shape": work.shape,
+        "original_shape": original_shape,
+        "original_dtype": str(original_dtype),
+        "bits": bits, "n_elements": n_elements,
+        "outlier_idx": outlier_idx, "normal_idx": normal_idx,
+        "outlier_fp16": outlier_fp16,
+    }
+    return packed, meta
+
+
+def quantize_kivi_value(
+    tensor: torch.Tensor,
+    bits: int = 4,
+    group_size: int = 64,   # mantido para compatibilidade
+    outlier_channels: int = 0,
+    layer_idx: int = 0,
+) -> tuple[torch.Tensor, dict]:
+    """
+    Quantização per-token para value cache (paper KIVI §3).
+
+    Diferente de quantize_kivi (keys, per-channel): aqui cada token tem sua
+    própria escala (min/max ao longo de head_dim). dequantize_kivi é reutilizado
+    pois usa meta['scale'] e meta['t_min'] que têm shape correto em ambos os casos.
+
+    tensor: shape (batch, n_kv_heads, seq_len, head_dim)
+    """
+    assert tensor.ndim == 4, f"Esperado ndim=4, recebido shape={tensor.shape}"
+    original_shape = tensor.shape
+    original_dtype = tensor.dtype
+
+    outlier_idx: torch.Tensor | None = None
+    normal_idx: torch.Tensor | None = None
+    outlier_fp16: torch.Tensor | None = None
+
+    if outlier_channels > 0:
+        outlier_idx, normal_idx = _detect_outlier_channels(tensor, outlier_channels)
+        outlier_fp16 = tensor[:, :, :, outlier_idx].half()
+        work = tensor[:, :, :, normal_idx]
+    else:
+        work = tensor
+
+    packed, t_min, scale, n_elements = _quantize_pertoken(work, bits)
 
     meta = {
         "t_min": t_min, "scale": scale, "shape": work.shape,

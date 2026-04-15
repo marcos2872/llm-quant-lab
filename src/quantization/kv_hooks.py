@@ -137,14 +137,14 @@ def install_kv_proj_hooks(
     model: torch.nn.Module,
     quantize_fn: Callable[[torch.Tensor], tuple[Any, Any]],
     dequantize_fn: Callable[[Any, Any], torch.Tensor],
+    quantize_fn_v: Callable[[torch.Tensor], tuple[Any, Any]] | None = None,
+    dequantize_fn_v: Callable[[Any, Any], torch.Tensor] | None = None,
 ) -> tuple[list[Any], list[float]]:
     """
     Instala hooks após k_proj e v_proj de cada camada de atenção.
 
-    Compatível com arquiteturas onde o cache é atualizado internamente
-    (ex: Qwen2.5) e o módulo de atenção não retorna past_key_values
-    no output tuple. Semanticamente equivalente a quantizar o KV cache:
-    quantiza e dequantiza o output das projeções antes do cálculo de atenção.
+    quantize_fn_v / dequantize_fn_v: funções separadas para v_proj (ex: KIVI
+    usa per-token para values). Se None, reusa as funções de keys.
 
     Retorna (handles, kv_mem_tracker). Passar handles para remove_kv_hooks.
     """
@@ -152,6 +152,9 @@ def install_kv_proj_hooks(
     if not attn_layers:
         logger.warning("Nenhum attention layer encontrado — hooks não instalados")
         return [], []
+
+    _qfn_v = quantize_fn_v or quantize_fn
+    _dqfn_v = dequantize_fn_v or dequantize_fn
 
     kv_mem_tracker: list[float] = []
     handles: list[Any] = []
@@ -166,6 +169,10 @@ def install_kv_proj_hooks(
             proj = getattr(attn, proj_name, None)
             if proj is None:
                 continue
+
+            # funções de quantização dependem do tipo de projeção
+            qfn = quantize_fn if proj_name == "k_proj" else _qfn_v
+            dqfn = dequantize_fn if proj_name == "k_proj" else _dqfn_v
 
             # n_kv_heads derivado de proj.out_features // head_dim — robusto
             # a diferentes versões do transformers que não expõem o atributo.
@@ -206,7 +213,7 @@ def install_kv_proj_hooks(
 
             h = proj.register_forward_hook(
                 _make_proj_hook(
-                    quantize_fn, dequantize_fn, kv_mem_tracker,
+                    qfn, dqfn, kv_mem_tracker,
                     n_kv_heads, head_dim,
                 )
             )

@@ -68,16 +68,15 @@ def eval_perplexity(
     device: str = "cpu",
     quantize_fn: Any = None,
     dequantize_fn: Any = None,
+    quantize_fn_v: Any = None,
 ) -> dict:
     """
     Calcula perplexidade com sliding window em corpus_path.
 
-    quantize_fn / dequantize_fn: quando fornecidos, instala hooks em k_proj/
-    v_proj de cada camada de atenção para simular o impacto da quantização de
-    KV cache. Os hooks interceptam as projeções antes da atenção, forçando que
-    cada forward pass use K/V quantizados+dequantizados — PPL resultante
-    reflete a degradação real do método.
-    Retorna dict com 'perplexity', 'avg_nll', 'n_samples'.
+    quantize_fn / dequantize_fn: instala hooks em k_proj/v_proj para simular
+    o impacto da quantização de KV cache.
+    quantize_fn_v: função separada para v_proj (ex: KIVI per-token para values);
+    se None, reusa quantize_fn em ambas as projeções.
     """
     lines = [
         json.loads(line)["text"]
@@ -93,7 +92,9 @@ def eval_perplexity(
     handles: list = []
     if quantize_fn is not None and dequantize_fn is not None:
         from src.quantization.kv_hooks import install_kv_proj_hooks
-        handles, _ = install_kv_proj_hooks(model, quantize_fn, dequantize_fn)
+        handles, _ = install_kv_proj_hooks(
+            model, quantize_fn, dequantize_fn, quantize_fn_v=quantize_fn_v
+        )
 
     total_nll, total_tokens = 0.0, 0
     try:

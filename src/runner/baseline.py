@@ -36,7 +36,7 @@ def run_baseline(
 
     console.print(f"\n[bold green]Baseline — {len(prompts)} prompts[/bold green]")
     results = [
-        measure_prompt(entry, model, tokenizer, max_new_tokens, device)
+        measure_prompt(entry, model, tokenizer, max_new_tokens, device, analytical_kv=True)
         for entry in track(prompts, description="Rodando prompts...")
     ]
 

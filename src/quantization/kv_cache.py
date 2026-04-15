@@ -59,10 +59,15 @@ class QuantizedDynamicCache(DynamicCache):
         quantize_fn: Callable[[torch.Tensor], tuple[Any, Any]],
         dequantize_fn: Callable[[Any, Any], torch.Tensor],
         tracker: list[float],
+        quantize_fn_v: Callable[[torch.Tensor], tuple[Any, Any]] | None = None,
+        dequantize_fn_v: Callable[[Any, Any], torch.Tensor] | None = None,
     ) -> None:
         super().__init__()
         self.quantize_fn = quantize_fn
         self.dequantize_fn = dequantize_fn
+        # fn separada para values (KIVI usa per-token); fallback para K se None
+        self.quantize_fn_v = quantize_fn_v or quantize_fn
+        self.dequantize_fn_v = dequantize_fn_v or dequantize_fn
         self.tracker = tracker
         # Prefill: (qk, meta_k, qv, meta_v) por camada
         self._qhist: list[tuple] = []
@@ -79,9 +84,9 @@ class QuantizedDynamicCache(DynamicCache):
         value_states: torch.Tensor,
         layer_idx: int,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Quantiza e armazena o prefill com codebook por camada."""
+        """Quantiza e armazena o prefill com fn separada para K e V."""
         qk, mk = self.quantize_fn(key_states, layer_idx=layer_idx)
-        qv, mv = self.quantize_fn(value_states, layer_idx=layer_idx)
+        qv, mv = self.quantize_fn_v(value_states, layer_idx=layer_idx)
         self._qhist.append((qk, mk, qv, mv))
         self._fp16k.append(None)
         self._fp16v.append(None)
@@ -100,7 +105,7 @@ class QuantizedDynamicCache(DynamicCache):
         """Concatena token novo com histórico dequantizado; mantém FP16 buffer."""
         qk, mk, qv, mv = self._qhist[layer_idx]
         parts_k: list[torch.Tensor] = [self.dequantize_fn(qk, mk)]
-        parts_v: list[torch.Tensor] = [self.dequantize_fn(qv, mv)]
+        parts_v: list[torch.Tensor] = [self.dequantize_fn_v(qv, mv)]
         if self._fp16k[layer_idx] is not None:
             parts_k.append(self._fp16k[layer_idx])
             parts_v.append(self._fp16v[layer_idx])
@@ -161,7 +166,7 @@ class QuantizedDynamicCache(DynamicCache):
         """Reconstrói value cache completo (quantizado + buffer FP16)."""
         result = []
         for i, (_, _, qv, mv) in enumerate(self._qhist):
-            parts = [self.dequantize_fn(qv, mv)]
+            parts = [self.dequantize_fn_v(qv, mv)]
             if self._fp16v[i] is not None:
                 parts.append(self._fp16v[i])
             result.append(torch.cat(parts, dim=-2))

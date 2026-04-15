@@ -58,10 +58,13 @@ def _patch_model(config: dict, model: str | None) -> dict:
 
 
 def _build_kv_helpers(cfg: dict) -> tuple:
-    """Retorna (quantize_fn, dequantize_fn) se kv_quantization.enabled, senão (None, None)."""
+    """
+    Retorna (quantize_fn_k, quantize_fn_v, dequantize_fn) se kv_quantization.enabled.
+    Retorna (None, None, None) quando desabilitado.
+    """
     kv_cfg = cfg.get("kv_quantization", {})
     if not kv_cfg.get("enabled", False):
-        return None, None
+        return None, None, None
     from src.runner.kv_quant import _get_quant_fns
     return _get_quant_fns(
         kv_cfg.get("method", "uniform"),
@@ -71,14 +74,20 @@ def _build_kv_helpers(cfg: dict) -> tuple:
     )
 
 
-def _build_cache_factory(quantize_fn: object, dequantize_fn: object) -> object:
+def _build_cache_factory(
+    quantize_fn_k: object,
+    dequantize_fn: object,
+    quantize_fn_v: object = None,
+) -> object:
     """Cria factory que retorna QuantizedDynamicCache fresco a cada chamada."""
-    if quantize_fn is None:
+    if quantize_fn_k is None:
         return None
     from src.quantization.kv_cache import QuantizedDynamicCache
 
     def _factory() -> QuantizedDynamicCache:
-        return QuantizedDynamicCache(quantize_fn, dequantize_fn, [])
+        return QuantizedDynamicCache(
+            quantize_fn_k, dequantize_fn, [], quantize_fn_v=quantize_fn_v
+        )
 
     return _factory
 
@@ -213,14 +222,15 @@ def eval_ppl(
     device = resolve_device(llm)
 
     from src.eval.perplexity import eval_perplexity
-    quantize_fn, dequantize_fn = _build_kv_helpers(cfg)
+    quantize_fn_k, quantize_fn_v, dequantize_fn = _build_kv_helpers(cfg)
     result = eval_perplexity(
         llm, tokenizer,
         corpus_path=corpus,
         max_samples=max_samples,
         device=device,
-        quantize_fn=quantize_fn,
+        quantize_fn=quantize_fn_k,
         dequantize_fn=dequantize_fn,
+        quantize_fn_v=quantize_fn_v,
     )
 
     console.print(result)
@@ -251,8 +261,8 @@ def eval_needle_cmd(
     device = resolve_device(llm)
 
     from src.eval.needle import eval_needle
-    quantize_fn, dequantize_fn = _build_kv_helpers(cfg)
-    cache_factory = _build_cache_factory(quantize_fn, dequantize_fn)
+    quantize_fn_k, quantize_fn_v, dequantize_fn = _build_kv_helpers(cfg)
+    cache_factory = _build_cache_factory(quantize_fn_k, dequantize_fn, quantize_fn_v)
     result = eval_needle(llm, tokenizer, needle_file=needle_file, device=device, cache_factory=cache_factory)
 
     if result_json and result_json.exists():
@@ -281,8 +291,8 @@ def eval_tasks(
     device = resolve_device(llm)
 
     from src.eval.task_score import eval_task_score
-    quantize_fn, dequantize_fn = _build_kv_helpers(cfg)
-    cache_factory = _build_cache_factory(quantize_fn, dequantize_fn)
+    quantize_fn_k, quantize_fn_v, dequantize_fn = _build_kv_helpers(cfg)
+    cache_factory = _build_cache_factory(quantize_fn_k, dequantize_fn, quantize_fn_v)
     effective_prompts = _load_eval_prompts(result_json, prompts)
     result = eval_task_score(llm, tokenizer, prompts_file=effective_prompts, device=device, cache_factory=cache_factory)
 

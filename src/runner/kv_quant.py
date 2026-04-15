@@ -28,37 +28,44 @@ console = Console()
 
 def _get_quant_fns(
     method: str, bits: int, kv_cfg: dict, model_name: str = ""
-) -> tuple[Callable, Callable]:
-    """Retorna (quantize_fn, dequantize_fn) para o método configurado."""
+) -> tuple[Callable, Callable, Callable]:
+    """
+    Retorna (quantize_fn_k, quantize_fn_v, dequantize_fn) para o método configurado.
+
+    Para a maioria dos métodos K e V usam a mesma fn; KIVI diferencia:
+      keys  → per-channel (quantize_kivi)
+      values → per-token  (quantize_kivi_value)
+    """
     if method == "uniform":
         from src.quantization.methods.uniform import dequantize_uniform, quantize_uniform
-        return (
-            partial(quantize_uniform, bits=bits,
-                    outlier_channels=kv_cfg.get("outlier_channels", 0)),
-            dequantize_uniform,
-        )
+        qfn = partial(quantize_uniform, bits=bits,
+                      outlier_channels=kv_cfg.get("outlier_channels", 0))
+        return qfn, qfn, dequantize_uniform
 
     if method == "kivi":
-        from src.quantization.methods.kivi import dequantize_kivi, quantize_kivi
-        return (
-            partial(quantize_kivi, bits=bits,
-                    group_size=kv_cfg.get("group_size", 64),
-                    outlier_channels=kv_cfg.get("outlier_channels", 0)),
+        from src.quantization.methods.kivi import (
             dequantize_kivi,
+            quantize_kivi,
+            quantize_kivi_value,
         )
+        qfn_k = partial(quantize_kivi, bits=bits,
+                        group_size=kv_cfg.get("group_size", 64),
+                        outlier_channels=kv_cfg.get("outlier_channels", 0))
+        qfn_v = partial(quantize_kivi_value, bits=bits,
+                        group_size=kv_cfg.get("group_size", 64),
+                        outlier_channels=kv_cfg.get("outlier_channels", 0))
+        return qfn_k, qfn_v, dequantize_kivi
 
     if method == "turboquant":
         from src.quantization.methods.turboquant import dequantize_turboquant, quantize_turboquant
-        return (
-            partial(
-                quantize_turboquant,
-                bits=bits,
-                outlier_bits=kv_cfg.get("outlier_bits", 0),  # 0 → bits+1
-                outlier_channels=kv_cfg.get("outlier_channels", 32),
-                rotation_seed=kv_cfg.get("rotation_seed", 42),
-            ),
-            dequantize_turboquant,
+        qfn = partial(
+            quantize_turboquant,
+            bits=bits,
+            outlier_bits=kv_cfg.get("outlier_bits", 0),
+            outlier_channels=kv_cfg.get("outlier_channels", 32),
+            rotation_seed=kv_cfg.get("rotation_seed", 42),
         )
+        return qfn, qfn, dequantize_turboquant
 
     raise ValueError(f"Método desconhecido: {method!r}. Use uniform | kivi | turboquant")
 
@@ -67,7 +74,8 @@ def _run_with_cache(
     model: object,
     tokenizer: object,
     prompts: list[dict],
-    quantize_fn: Callable,
+    quantize_fn_k: Callable,
+    quantize_fn_v: Callable,
     dequantize_fn: Callable,
     max_new_tokens: int,
     device: str,
@@ -76,15 +84,17 @@ def _run_with_cache(
     """
     Roda prompts usando QuantizedDynamicCache por prompt.
 
-    Cada prompt recebe um cache fresco; o tracker mede o MB quantizado
-    do prefill, refletindo a redução real de memória GPU.
+    quantize_fn_k / quantize_fn_v permitem fns distintas para K e V
+    (ex: KIVI usa per-channel para K e per-token para V).
     """
     from src.quantization.kv_cache import QuantizedDynamicCache
 
     results: list[dict] = []
     for entry in track(prompts, description=label):
         tracker: list[float] = []
-        cache = QuantizedDynamicCache(quantize_fn, dequantize_fn, tracker)
+        cache = QuantizedDynamicCache(
+            quantize_fn_k, dequantize_fn, tracker, quantize_fn_v=quantize_fn_v
+        )
         results.append(
             measure_prompt(
                 entry, model, tokenizer, max_new_tokens, device,
@@ -124,9 +134,9 @@ def run_kv_quant(
     device = resolve_device(model)
     max_new_tokens = config.get("max_new_tokens", 256)
 
-    quantize_fn, dequantize_fn = _get_quant_fns(method, bits, kv_cfg, model_name)
+    quantize_fn_k, quantize_fn_v, dequantize_fn = _get_quant_fns(method, bits, kv_cfg, model_name)
     results = _run_with_cache(
-        model, tokenizer, prompts, quantize_fn, dequantize_fn,
+        model, tokenizer, prompts, quantize_fn_k, quantize_fn_v, dequantize_fn,
         max_new_tokens, device, f"{method} INT{bits}...",
     )
 
