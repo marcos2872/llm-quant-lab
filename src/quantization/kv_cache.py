@@ -63,7 +63,14 @@ class QuantizedDynamicCache(DynamicCache):
         self._qhist.append((qk, mk, qv, mv))
         self._fp16k.append(None)
         self._fp16v.append(None)
-        self.tracker.append(_mb(qk) + _mb(qv))
+        # Contabiliza FP16 outliers guardados no meta (KIVI/uniform com outlier_channels > 0)
+        out_k = mk.get("outlier_fp16") if isinstance(mk, dict) else None
+        out_v = mv.get("outlier_fp16") if isinstance(mv, dict) else None
+        extra_mb = (
+            (_mb(out_k) if out_k is not None else 0.0)
+            + (_mb(out_v) if out_v is not None else 0.0)
+        )
+        self.tracker.append(_mb(qk) + _mb(qv) + extra_mb)
         return key_states, value_states
 
     def _handle_decode(
