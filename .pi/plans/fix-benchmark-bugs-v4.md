@@ -2,7 +2,7 @@
 
 **Data:** 2026-04-14
 **Autor:** agente-plan
-**Status:** aprovado
+**Status:** concluído
 **Referência:** `.pi/plans/fix-benchmark-bugs-v3.md`
 
 ---

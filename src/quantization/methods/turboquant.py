@@ -28,8 +28,8 @@ import torch
 
 # ── caches de sessão ──────────────────────────────────────────────────────────
 # _rotation_cache:  (head_dim, seed)  → Π
-# _codebook_cache:  (bits, head_dim)  → centroids  (data-independent, recalibrado
-#                   para N(0, 0.3) truncada em [-1,1] após escala data-adaptive)
+# _codebook_cache:  (bits, head_dim, version)  → centroids  (data-independent,
+#                   calibrado para N(0, 1/√d) — distribuição teórica pós-rotação)
 _rotation_cache: dict[tuple[int, int], torch.Tensor] = {}
 _codebook_cache: dict[tuple[int, int], torch.Tensor] = {}
 
@@ -100,21 +100,20 @@ def _get_theoretical_codebook(
     device: torch.device,
 ) -> torch.Tensor:
     """
-    Codebook Lloyd-Max para distribuição N(0, 1) normalizada.
+    Codebook Lloyd-Max para distribuição teórica N(0, 1/√d).
 
     Calculado UMA VEZ por (bits, head_dim), seed=0 fixo.
-    Após a escala data-adaptive (rotação normalizada por max-abs por dimensão),
-    os valores ficam em [-1, 1] com distribuição aproximadamente Gaussiana
-    centrada em 0 — N(0, σ≈0.3) cobre [-1,1] com caudas truncadas.
+    Após normalização para S^{d-1} e rotação ortogonal Π, cada coordenada
+    segue N(0, 1/d) exatamente — independente do RoPE. Codebook sem truncamento.
     """
-    key = (bits, head_dim, "v3")  # v3: codebook N(0,1) alinhado com rot_scale std
+    key = (bits, head_dim, "v4")  # v4: codebook teórico N(0, 1/√d), sem rot_scale
     if key in _codebook_cache:
         return _codebook_cache[key].to(device)
     rng = np.random.default_rng(0)
-    # Após normalização por std/dim, cada coordenada segue N(0, 1).
-    # Lloyd-Max para N(0, 1) distribui os centroides de forma ótima.
-    raw = rng.normal(0.0, 1.0, size=500_000).astype(np.float32)
-    samples = torch.from_numpy(raw.clip(-5.0, 5.0))  # cobre ±5σ (99.9999%)
+    # Distribuição teórica exata das coordenadas pós-rotação de vetores em S^{d-1}:
+    # std = 1/√d. Lloyd-Max sem truncamento cobre toda a distribuição real.
+    raw = rng.normal(0.0, 1.0 / (head_dim ** 0.5), size=200_000).astype(np.float32)
+    samples = torch.from_numpy(raw)  # sem clip — centroides cobrem as caudas reais
     centroids = _lloyd_max_1d(samples, 2 ** bits)
     _codebook_cache[key] = centroids
     return centroids.to(device)
@@ -242,19 +241,14 @@ def quantize_turboquant(
     R = _get_rotation(head_dim, rotation_seed, device)
     rotated = normalized @ R
 
-    # 3. Escala data-adaptive: std por dimensão → normaliza para N(0, 1) por dim.
-    # Invariante ao ponto de interceptação (pré ou pós-RoPE): após normalização
-    # para S^{d-1} e rotação ortogonal Π, std/dim ≈ 1/√d independente do RoPE.
-    rot_scale = rotated.std(dim=0, keepdim=True).clamp(min=1e-8)  # (1, head_dim)
-    rotated_scaled = rotated / rot_scale
-
-    # 4. Codebook único Lloyd-Max para N(0, 0.3) truncada em [-1,1] + quantização escalar
+    # 3. Codebook teórico N(0, 1/√d) + quantização escalar (sem escala adaptativa).
+    # Após S^{d-1} + rotação ortogonal: coordenadas ~ N(0, 1/d) exatamente.
+    # Codebook calibrado para esta distribuição, sem clipping, invariante ao RoPE.
     codebook = _get_theoretical_codebook(bits, head_dim, device)
-    q_all = _pack_indices(_scalar_quantize(rotated_scaled, codebook), bits)
+    q_all = _pack_indices(_scalar_quantize(rotated, codebook), bits)
 
     meta = {
         "codebook": codebook,
-        "rot_scale": rot_scale,
         "norms": norms,
         "rotation_seed": rotation_seed,
         "head_dim": head_dim,
@@ -271,10 +265,9 @@ def dequantize_turboquant(quantized: torch.Tensor, meta: dict) -> torch.Tensor:
     Reconstrói tensor KV a partir do formato comprimido.
 
     Reverso de quantize_turboquant (Algoritmo 1 DeQuant_mse):
-      1. Desempacota índices → lookup no codebook → espaço rotacionado+escalado
-      2. Desfaz escala data-adaptive (multiplica por rot_scale)
-      3. Aplica Πᵀ = Π⁻¹ (rotação inversa; ortogonal → Πᵀ = Π⁻¹)
-      4. Desnormaliza pelas normas originais (desfaz normalização para S^{d-1})
+      1. Desempacota índices → lookup no codebook → espaço rotacionado
+      2. Aplica Πᵀ = Π⁻¹ (rotação inversa; ortogonal → Πᵀ = Π⁻¹)
+      3. Desnormaliza pelas normas originais (desfaz normalização para S^{d-1})
     """
     device = quantized.device
     dtype = getattr(torch, meta["original_dtype"].replace("torch.", ""))
@@ -282,14 +275,12 @@ def dequantize_turboquant(quantized: torch.Tensor, meta: dict) -> torch.Tensor:
     n_tokens = meta["n_tokens"]
     bits = meta["bits"]
 
-    # 1. Desempacota índices e reconstrói no espaço rotacionado+escalado
+    # 1. Desempacota índices e reconstrói no espaço rotacionado
     indices = _unpack_indices(quantized, bits, head_dim)  # (n_tokens, head_dim)
-    full_rotated_scaled = _scalar_dequantize(indices, meta["codebook"].to(device))
+    full_rotated = _scalar_dequantize(indices, meta["codebook"].to(device))
+    # rot_scale removido — valores já estão na escala correta N(0, 1/√d)
 
-    # 2. Desfaz a escala data-adaptive
-    full_rotated = full_rotated_scaled * meta["rot_scale"].to(device)
-
-    # 3. Rotação inversa Πᵀ
+    # 2. Rotação inversa Πᵀ
     R = _get_rotation(head_dim, meta["rotation_seed"], device)
     reconstructed = full_rotated @ R.T
 
